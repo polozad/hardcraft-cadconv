@@ -228,7 +228,8 @@ jobs:
           ANALYTIC = {"plane", "cylinder", "cone", "sphere", "torus"}
           an = [f for f in orc["faces"] if f["s"] in ANALYTIC]
           man = {"triple": triple, "protocol": hs["protocol"], "impl": hs["impl"],
-                 "occt": hs["occt"], "commit": os.environ.get("GITHUB_SHA", ""),
+                 "occt": hs["occt"], "caps": hs.get("caps") or [],
+                 "commit": os.environ.get("GITHUB_SHA", ""),
                  "run": os.environ.get("GITHUB_RUN_ID", ""),
                  "has_placement": bool(an) and all(f.get("g") for f in an)}
           for name in sorted(os.listdir("dist")):
