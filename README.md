@@ -46,11 +46,21 @@ hc-cadconv --protocol
 * `refine_torn` — `1` re-meshes a body whose tessellation tore along a shared CAD
   edge, keeping the least-torn result of a fixed ladder. Sloppy exports need it;
   clean ones do not notice.
-* `--protocol` prints one JSON line — `{"protocol": N, "impl": ..., "occt": ...}`.
-  **This is the compatibility contract:** a consumer checks that number and refuses
-  a converter it does not understand, rather than misreading a changed sidecar. The
-  sidecar schema may gain optional keys without moving the protocol; a consumer of
-  an optional key must degrade when it is absent.
+* `--protocol` prints one JSON line:
+  `{"protocol": N, "impl": ..., "occt": ..., "caps": [...]}`.
+
+  **`protocol` is the compatibility contract.** A consumer compares it and refuses
+  a converter it does not understand, rather than misreading a changed sidecar. It
+  moves only when an older build would be MISREAD — changed argv, changed units, a
+  changed meaning for an existing field.
+
+  **`caps` is the fine grain.** Additive sidecar keys are announced here instead of
+  moving the number, because the number is compared strictly and moving it refuses
+  every older build. Present means authoritative: a channel that is not listed is
+  not emitted. **Absent means unknown, never "none"** — a converter older than the
+  list says nothing, and a consumer must fall back to probing the data rather than
+  concluding that the build has no UV channel. Current names: `placement`, `eids`,
+  `seams`, `uv`, `parts`.
 
 ## Build from source
 

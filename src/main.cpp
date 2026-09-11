@@ -25,20 +25,29 @@
 
 #include "convert.h"
 
-// Bump TOGETHER with `cadio/backend.py` PROTOCOL and `cadio/step2glb.py`
-// PROTOCOL whenever the OUTPUT contract changes (argv, units, sidecar schema).
+// Bump TOGETHER with the consumer's PROTOCOL and the python reference's, but
+// ONLY when an older producer would be MISREAD — changed argv, changed units,
+// or a changed meaning for an existing field. The number is compared on strict
+// equality, so a bump REFUSES every older build outright; an ADDITIVE sidecar
+// key is announced in CAPS below instead, and a consumer degrades around it.
 // 2 (2026-08-20, unit abstract): glb + sidecars in the STEP file's AUTHOR
 // units (declared-unit normalisation unwound), deflection argv in author
 // units, per-body extent floor on the deflection.
 static const int PROTOCOL = 2;
+
+// The channels this build emits. Present = authoritative; a consumer that sees
+// NO caps key must treat it as UNKNOWN (an older converter) and go on probing
+// the data, never as "this converter emits nothing".
+static const char *CAPS = "\"placement\",\"eids\",\"seams\",\"uv\",\"parts\"";
 
 static int handshake()
 {
   // No "ocp" key on purpose: `backend.verify()` rejects an EXPLICIT false
   // (that is the source path's "this python has no bindings" answer). A native
   // binary has no bindings to report, and must not look like a broken python.
-  std::printf("{\"protocol\":%d,\"impl\":\"hc-cadconv\",\"occt\":\"%s\"}\n",
-              PROTOCOL, OCC_VERSION_COMPLETE);
+  std::printf("{\"protocol\":%d,\"impl\":\"hc-cadconv\",\"occt\":\"%s\","
+              "\"caps\":[%s]}\n",
+              PROTOCOL, OCC_VERSION_COMPLETE, CAPS);
   return 0;
 }
 

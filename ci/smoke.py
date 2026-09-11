@@ -48,8 +48,17 @@ def main():
     for k in ("protocol", "impl", "occt"):
         if k not in hs:
             die("handshake has no %r: %s" % (k, hs))
-    print("handshake ok: protocol %s (%s, OCCT %s)"
-          % (hs["protocol"], hs["impl"], hs["occt"]))
+    # CAPS: a consumer treats an absent list as UNKNOWN and keeps probing, so a
+    # build that silently stopped announcing would look like an old one rather
+    # than like a defect. Assert it here, where the exe is the thing in question.
+    caps = hs.get("caps")
+    if not isinstance(caps, list) or not caps:
+        die("handshake announces no capability list: %s" % hs)
+    for want in ("placement", "uv", "parts", "seams", "eids"):
+        if want not in caps:
+            die("capability %r is not announced: %s" % (want, caps))
+    print("handshake ok: protocol %s (%s, OCCT %s), caps %s"
+          % (hs["protocol"], hs["impl"], hs["occt"], ",".join(caps)))
 
     glb = "smoke_out.glb"
     run = subprocess.run([exe, step, glb, "0.1", "20", "1"],
