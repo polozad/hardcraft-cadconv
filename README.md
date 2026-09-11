@@ -31,8 +31,22 @@ Windows: download `hardcraft-cadtools-<version>-win64.exe` from
 [Releases](../../releases) and run it. It installs **per user**, no administrator
 rights, nothing written outside your profile.
 
-macOS / Linux: download the archive for your platform from the same page and put
-the folder anywhere; the executable is `hc-cadconv` inside it.
+macOS / Linux: download `hc-cadconv-<platform>.tar.gz` from the same page, unpack
+it anywhere, and run `hc-cadconv` from inside the folder — it finds its libraries
+next to itself.
+
+On macOS the binaries are **ad-hoc signed**, which is enough for the loader and
+not enough for Gatekeeper: a downloaded copy is quarantined and the first run is
+refused with "cannot be opened because the developer cannot be verified". Clear
+the quarantine flag once —
+
+```
+xattr -dr com.apple.quarantine hc-cadconv
+```
+
+— or right-click the executable and choose Open. This is the same
+unsigned-binary problem the Windows build has, and the same fix is planned for
+both: a certificate, not a workaround.
 
 ## Use
 

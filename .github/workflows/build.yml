@@ -156,6 +156,19 @@ jobs:
           "$sha  $($exe.Name)" | Tee-Object -FilePath "$($exe.FullName).sha256"
           "### $($exe.Name)`n`nSHA-256: ``$sha``  ($([math]::Round($exe.Length/1MB,1)) MB)" >> $env:GITHUB_STEP_SUMMARY
 
+      # mac/linux ship a FOLDER, and a folder cannot be attached to a release.
+      # tar.gz rather than zip: it keeps the executable bit and the symlinks the
+      # OCCT dylibs use, both of which a zip round-trip quietly drops — the
+      # download would then need a chmod before it runs at all.
+      - name: archive (mac/linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -e
+          tar -C dist -czf "dist/hc-cadconv-${{ matrix.triple }}.tar.gz" hc-cadconv
+          shasum -a 256 "dist/hc-cadconv-${{ matrix.triple }}.tar.gz" \
+            | tee "dist/hc-cadconv-${{ matrix.triple }}.tar.gz.sha256"
+
       # The manifest a consumer's release step reads INSTEAD of running the exe:
       # a release can be cut from any machine, and a Windows installer cannot be
       # interrogated from a mac. Without it the previously attached converter
@@ -179,7 +192,8 @@ jobs:
                  "has_placement": bool(an) and all(f.get("g") for f in an)}
           for name in sorted(os.listdir("dist")):
               p = os.path.join("dist", name)
-              if os.path.isfile(p) and (name.endswith(".exe") or name.endswith(".zip")):
+              if os.path.isfile(p) and (name.endswith(".exe")
+                                        or name.endswith(".tar.gz")):
                   man["asset"] = name
                   man["sha256"] = hashlib.sha256(open(p, "rb").read()).hexdigest()
           open("dist/hc-cadconv-%s.manifest.json" % triple, "w",
@@ -195,5 +209,7 @@ jobs:
             dist/hc-cadconv/
             dist/hardcraft-cadtools-*-win64.exe
             dist/hardcraft-cadtools-*-win64.exe.sha256
+            dist/hc-cadconv-*.tar.gz
+            dist/hc-cadconv-*.tar.gz.sha256
             dist/hc-cadconv-*.manifest.json
           if-no-files-found: error
