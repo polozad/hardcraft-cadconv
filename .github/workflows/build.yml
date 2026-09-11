@@ -1,0 +1,165 @@
+# hc-cadconv — compile check on every push, packages on demand.
+#
+# This repository is PUBLIC, so standard GitHub-hosted runners cost nothing on
+# any OS. That is the whole reason the converter lives here: in the private tree
+# a cold macOS build would have eaten a third of the free monthly allowance, and
+# so the mac binary kept being deferred.
+#
+# Two jobs, deliberately split:
+#
+#   check    — Linux only, on every push. OCCT is cached, so this is minutes and
+#              it answers the one question a C++ edit raises: does it build, and
+#              does the binary still write every block? The canonical tree lives
+#              in a private repo whose author has no local toolchain, so without
+#              this a mistake waits for a package run to surface.
+#   package  — all three platforms, manual. Produces the artifacts a release is
+#              cut from: the Windows installer, and the bare onedir folder for
+#              macOS and Linux.
+#
+# NB the OCCT cache is evicted after 7 idle days, and a cold build is well over
+# an hour. Do not add a schedule to keep it warm — that burns the runner budget
+# to save the runner budget. Build when the source changes; accept a cold run.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: compile check (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: cache OCCT
+        uses: actions/cache@v4
+        with:
+          path: |
+            _occt/linux-64
+            _occt/occt-src/LICENSE_LGPL_21.txt
+            _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
+            _occt/rapidjson/license.txt
+          key: occt-V7_9_3-linux-64-v2
+      - name: build
+        run: python build.py --bundle
+      - name: smoke
+        run: python ci/smoke.py dist/hc-cadconv/hc-cadconv ci/smoke.stp
+
+  package:
+    name: package (${{ matrix.triple }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: win-64
+            exe: dist/hc-cadconv/hc-cadconv.exe
+          - os: macos-latest
+            triple: macos-arm64
+            exe: dist/hc-cadconv/hc-cadconv
+          - os: ubuntu-latest
+            triple: linux-64
+            exe: dist/hc-cadconv/hc-cadconv
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: ninja (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: ninja (macos)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - name: cache OCCT
+        uses: actions/cache@v4
+        with:
+          path: |
+            _occt/${{ matrix.triple }}
+            _occt/occt-src/LICENSE_LGPL_21.txt
+            _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
+            _occt/rapidjson/license.txt
+          key: occt-V7_9_3-${{ matrix.triple }}-v2
+
+      - name: build + bundle
+        run: python build.py --bundle
+
+      - name: smoke
+        run: python ci/smoke.py ${{ matrix.exe }} ci/smoke.stp
+
+      # Inno Setup 6 ships on the windows-latest image; choco is the fallback.
+      - name: installer (windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress | Out-Null
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc hardcraft-cadtools.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          $exe = Get-ChildItem dist\hardcraft-cadtools-*-win64.exe | Select-Object -First 1
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "$sha  $($exe.Name)" | Tee-Object -FilePath "$($exe.FullName).sha256"
+          "### $($exe.Name)`n`nSHA-256: ``$sha``  ($([math]::Round($exe.Length/1MB,1)) MB)" >> $env:GITHUB_STEP_SUMMARY
+
+      # The manifest a consumer's release step reads INSTEAD of running the exe:
+      # a release can be cut from any machine, and a Windows installer cannot be
+      # interrogated from a mac. Without it the previously attached converter
+      # gets dragged forward unchecked — which is exactly how a protocol-1
+      # package stayed attached across a protocol bump and refused every tester.
+      - name: manifest
+        shell: bash
+        run: |
+          set -e
+          python - "${{ matrix.exe }}" "${{ matrix.triple }}" <<'PY'
+          import hashlib, json, os, subprocess, sys
+          exe, triple = sys.argv[1], sys.argv[2]
+          hs = json.loads(subprocess.run([exe, "--protocol"], capture_output=True,
+                                         text=True).stdout.strip().splitlines()[-1])
+          orc = json.load(open("smoke_out.glb.oracle.json", encoding="utf-8"))
+          ANALYTIC = {"plane", "cylinder", "cone", "sphere", "torus"}
+          an = [f for f in orc["faces"] if f["s"] in ANALYTIC]
+          man = {"triple": triple, "protocol": hs["protocol"], "impl": hs["impl"],
+                 "occt": hs["occt"], "commit": os.environ.get("GITHUB_SHA", ""),
+                 "run": os.environ.get("GITHUB_RUN_ID", ""),
+                 "has_placement": bool(an) and all(f.get("g") for f in an)}
+          for name in sorted(os.listdir("dist")):
+              p = os.path.join("dist", name)
+              if os.path.isfile(p) and (name.endswith(".exe") or name.endswith(".zip")):
+                  man["asset"] = name
+                  man["sha256"] = hashlib.sha256(open(p, "rb").read()).hexdigest()
+          open("dist/hc-cadconv-%s.manifest.json" % triple, "w",
+               encoding="utf-8").write(json.dumps(man, indent=2, sort_keys=True))
+          print(json.dumps(man, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hc-cadconv-${{ matrix.triple }}
+          path: |
+            dist/hc-cadconv/
+            dist/hardcraft-cadtools-*-win64.exe
+            dist/hardcraft-cadtools-*-win64.exe.sha256
+            dist/hc-cadconv-*.manifest.json
+          if-no-files-found: error
