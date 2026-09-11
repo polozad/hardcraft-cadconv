@@ -204,11 +204,19 @@ jobs:
         shell: bash
         run: |
           set -e
-          tar -C dist -czf "dist/hc-cadconv-${{ matrix.triple }}.tar.gz" hc-cadconv
+          # the VERSION belongs in the file name. The Windows installer has
+          # carried it from the start; an archive called just
+          # `hc-cadconv-linux-64.tar.gz` sitting in a downloads folder cannot
+          # say which release it came from, and a release page with several
+          # versions offers the same name twice.
+          ver=$(sed -n 's/^#define AppVersion *"\([^"]*\)".*/\1/p' \
+                hardcraft-cadtools.iss)
+          test -n "$ver" || { echo "no AppVersion in the .iss"; exit 1; }
+          name="hc-cadconv-$ver-${{ matrix.triple }}.tar.gz"
+          tar -C dist -czf "dist/$name" hc-cadconv
           # from INSIDE dist: shasum records the path it was given, and a
           # `shasum -c` next to the download must not look for `dist/...`
-          cd dist && shasum -a 256 "hc-cadconv-${{ matrix.triple }}.tar.gz" \
-            | tee "hc-cadconv-${{ matrix.triple }}.tar.gz.sha256"
+          cd dist && shasum -a 256 "$name" | tee "$name.sha256"
 
       # The manifest a consumer's release step reads INSTEAD of running the exe:
       # a release can be cut from any machine, and a Windows installer cannot be
