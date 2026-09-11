@@ -61,10 +61,25 @@ jobs:
             _occt/occt-src/LICENSE_LGPL_21.txt
             _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
             _occt/rapidjson/license.txt
-          key: occt-V7_9_3-linux-64-v2
+          key: occt-V7_9_3-linux-64-v3
       - name: build OCCT
         if: steps.occt_cache.outputs.cache-hit != 'true'
         run: python build.py --occt
+      - name: verify the OCCT prefix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, sys
+          pre = os.path.join("_occt", "linux-64")
+          if not os.path.isdir(pre):
+              sys.exit("no OCCT prefix at %s — the cache path must match "
+                       "build.py's subdir()" % pre)
+          n = sum(len(f) for _, _, f in os.walk(pre))
+          print("OCCT prefix %s: %d files" % (pre, n))
+          if n < 20:
+              sys.exit("OCCT prefix holds %d files — saving that would cache "
+                       "nothing and every run would rebuild from source" % n)
+          PY
       - name: save OCCT
         if: steps.occt_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -74,7 +89,7 @@ jobs:
             _occt/occt-src/LICENSE_LGPL_21.txt
             _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
             _occt/rapidjson/license.txt
-          key: occt-V7_9_3-linux-64-v2
+          key: occt-V7_9_3-linux-64-v3
       - name: build converter
         run: python build.py --bundle
       - name: smoke
@@ -89,14 +104,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `triple` names the ASSET; `prefix` must equal build.py's subdir(),
+          # which is what the OCCT install tree is actually called. They differ
+          # on mac (osx-arm64 vs a friendlier macos-arm64) and a mismatch is
+          # SILENT: the cache path does not exist, an EMPTY entry is saved, and
+          # every run rebuilds OCCT from source while reporting a cache hit next
+          # door. That cost 24 minutes a run until the 0 MB entry gave it away.
           - os: windows-latest
             triple: win-64
+            prefix: win-64
             exe: dist/hc-cadconv/hc-cadconv.exe
           - os: macos-latest
             triple: macos-arm64
+            prefix: osx-arm64
             exe: dist/hc-cadconv/hc-cadconv
           - os: ubuntu-latest
             triple: linux-64
+            prefix: linux-64
             exe: dist/hc-cadconv/hc-cadconv
     steps:
       - uses: actions/checkout@v5
@@ -114,24 +138,39 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            _occt/${{ matrix.triple }}
+            _occt/${{ matrix.prefix }}
             _occt/occt-src/LICENSE_LGPL_21.txt
             _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
             _occt/rapidjson/license.txt
-          key: occt-V7_9_3-${{ matrix.triple }}-v2
+          key: occt-V7_9_3-${{ matrix.prefix }}-v3
       - name: build OCCT
         if: steps.occt_cache.outputs.cache-hit != 'true'
         run: python build.py --occt
+      - name: verify the OCCT prefix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, sys
+          pre = os.path.join("_occt", "${{ matrix.prefix }}")
+          if not os.path.isdir(pre):
+              sys.exit("no OCCT prefix at %s — the cache path must match "
+                       "build.py's subdir()" % pre)
+          n = sum(len(f) for _, _, f in os.walk(pre))
+          print("OCCT prefix %s: %d files" % (pre, n))
+          if n < 20:
+              sys.exit("OCCT prefix holds %d files — saving that would cache "
+                       "nothing and every run would rebuild from source" % n)
+          PY
       - name: save OCCT
         if: steps.occt_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
-            _occt/${{ matrix.triple }}
+            _occt/${{ matrix.prefix }}
             _occt/occt-src/LICENSE_LGPL_21.txt
             _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
             _occt/rapidjson/license.txt
-          key: occt-V7_9_3-${{ matrix.triple }}-v2
+          key: occt-V7_9_3-${{ matrix.prefix }}-v3
 
       - name: build + bundle
         run: python build.py --bundle
@@ -166,8 +205,10 @@ jobs:
         run: |
           set -e
           tar -C dist -czf "dist/hc-cadconv-${{ matrix.triple }}.tar.gz" hc-cadconv
-          shasum -a 256 "dist/hc-cadconv-${{ matrix.triple }}.tar.gz" \
-            | tee "dist/hc-cadconv-${{ matrix.triple }}.tar.gz.sha256"
+          # from INSIDE dist: shasum records the path it was given, and a
+          # `shasum -c` next to the download must not look for `dist/...`
+          cd dist && shasum -a 256 "hc-cadconv-${{ matrix.triple }}.tar.gz" \
+            | tee "hc-cadconv-${{ matrix.triple }}.tar.gz.sha256"
 
       # The manifest a consumer's release step reads INSTEAD of running the exe:
       # a release can be cut from any machine, and a Windows installer cannot be
