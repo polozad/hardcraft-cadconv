@@ -19,6 +19,12 @@
 # NB the OCCT cache is evicted after 7 idle days, and a cold build is well over
 # an hour. Do not add a schedule to keep it warm — that burns the runner budget
 # to save the runner budget. Build when the source changes; accept a cold run.
+#
+# The cache is RESTORED and SAVED as separate steps on purpose. `actions/cache`
+# writes nothing when the job fails, so the first red smoke would have made every
+# retry pay for a full cold OCCT build again — an hour per iteration to fix a
+# one-line linker flag. OCCT's validity does not depend on our tests, so it is
+# saved the moment it finishes building.
 name: build
 
 on:
@@ -44,10 +50,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-      - name: cache OCCT
-        uses: actions/cache@v4
+      - name: ninja + patchelf
+        run: sudo apt-get update && sudo apt-get install -y ninja-build patchelf
+      - name: restore OCCT
+        id: occt_cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             _occt/linux-64
@@ -55,7 +62,20 @@ jobs:
             _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
             _occt/rapidjson/license.txt
           key: occt-V7_9_3-linux-64-v2
-      - name: build
+      - name: build OCCT
+        if: steps.occt_cache.outputs.cache-hit != 'true'
+        run: python build.py --occt
+      - name: save OCCT
+        if: steps.occt_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            _occt/linux-64
+            _occt/occt-src/LICENSE_LGPL_21.txt
+            _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
+            _occt/rapidjson/license.txt
+          key: occt-V7_9_3-linux-64-v2
+      - name: build converter
         run: python build.py --bundle
       - name: smoke
         run: python ci/smoke.py dist/hc-cadconv/hc-cadconv ci/smoke.stp
@@ -83,14 +103,28 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: ninja (linux)
+      - name: ninja + patchelf (linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ninja-build patchelf
       - name: ninja (macos)
         if: runner.os == 'macOS'
         run: brew install ninja
-      - name: cache OCCT
-        uses: actions/cache@v4
+      - name: restore OCCT
+        id: occt_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            _occt/${{ matrix.triple }}
+            _occt/occt-src/LICENSE_LGPL_21.txt
+            _occt/occt-src/OCCT_LGPL_EXCEPTION.txt
+            _occt/rapidjson/license.txt
+          key: occt-V7_9_3-${{ matrix.triple }}-v2
+      - name: build OCCT
+        if: steps.occt_cache.outputs.cache-hit != 'true'
+        run: python build.py --occt
+      - name: save OCCT
+        if: steps.occt_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
         with:
           path: |
             _occt/${{ matrix.triple }}

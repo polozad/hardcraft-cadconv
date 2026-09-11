@@ -62,7 +62,10 @@ python build.py --bundle   # + collect the runtime next to the executable
 ```
 
 Requires CMake and a C++17 compiler; Ninja if you would like it to finish this
-week. OCCT is configured with `USE_FREEIMAGE=OFF USE_FREETYPE=OFF USE_OPENGL=OFF`,
+week. Bundling also needs the platform's own relocation tool — `patchelf` on
+Linux, the Xcode command line tools (`install_name_tool`, `codesign`) on macOS —
+so that the folder finds its libraries next to itself instead of where it was
+built. Windows needs neither. OCCT is configured with `USE_FREEIMAGE=OFF USE_FREETYPE=OFF USE_OPENGL=OFF`,
 so the bundle has **no third-party runtime dependency** — the alternative was
 shipping some fifteen image codecs a STEP converter never calls.
 

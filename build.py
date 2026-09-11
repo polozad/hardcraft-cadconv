@@ -363,6 +363,35 @@ def mac_relocate(out):
         _quiet(["codesign", "-f", "-s", "-", os.path.join(out, f)])
 
 
+def linux_relocate(out):
+    """Give every bundled file an $ORIGIN run path — the linux twin of
+    `mac_relocate`, and the step whose absence made the first public linux build
+    die on `libTKDE.so.7.9: cannot open shared object file`.
+
+    The exe alone is not enough. CMake records $ORIGIN on it, but a modern linker
+    writes DT_RUNPATH, and RUNPATH is NOT inherited: the moment one bundled OCCT
+    library asks for another, the loader searches without it. Stamping each file
+    (as the mac path already did, by rewriting every record and adding an rpath
+    per file) makes the folder self-contained however it was linked.
+    """
+    tool = shutil.which("patchelf")
+    if tool is None:
+        raise SystemExit(
+            "patchelf not found — the linux bundle needs it to make the folder "
+            "self-contained (apt install patchelf / dnf install patchelf). It is "
+            "the linux counterpart of the mac path's install_name_tool.")
+    # NOT through `_quiet`: that one swallows a non-zero exit on purpose (adding
+    # an rpath a mac binary already carries is a harmless error). Here a silent
+    # no-op would reproduce the very bug this function exists to fix.
+    for f in sorted(os.listdir(out)):
+        rc = subprocess.call([tool, "--set-rpath", "$ORIGIN",
+                              os.path.join(out, f)],
+                             stdout=subprocess.DEVNULL)
+        if rc != 0:
+            raise SystemExit("patchelf --set-rpath failed on %s (exit %d)"
+                             % (f, rc))
+
+
 def bundle(prefix, exe):
     """Lay the exe + the libraries it actually needs into dist/hc-cadconv/.
 
@@ -388,6 +417,8 @@ def bundle(prefix, exe):
             queue.append(src)
     if sys.platform == "darwin":
         mac_relocate(out)
+    elif sys.platform.startswith("linux"):
+        linux_relocate(out)
     total = sum(os.path.getsize(os.path.join(out, f)) for f in os.listdir(out))
     print("bundled %d file(s), %.1f MB -> %s"
           % (len(os.listdir(out)), total / 1e6, out))

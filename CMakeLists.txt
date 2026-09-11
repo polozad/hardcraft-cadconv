@@ -53,9 +53,18 @@ target_link_libraries(hc-cadconv PRIVATE
 ## The exe finds its own libs next to itself on every platform: win = dll in the
 ## same folder (no rpath concept), linux/mac = a relative rpath. Keeping this in
 ## CMake is what lets `build.py` stay a dumb copier.
+##
+## LINUX: `--disable-new-dtags` is NOT cosmetic. Modern linkers default to
+## DT_RUNPATH, and DT_RUNPATH IS NOT INHERITED BY DEPENDENCIES: the exe finds the
+## OCCT libs it names itself, and then one of THOSE asks for a third (TKDESTEP ->
+## TKDE) and the loader searches without $ORIGIN and dies with «cannot open shared
+## object file». DT_RPATH, which this flag restores, applies down the whole chain.
+## `build.py`'s linux_relocate() stamps every bundled file as well — either fix
+## alone is enough, and a bundle is not something to be clever about.
 if(UNIX AND NOT APPLE)
   set_target_properties(hc-cadconv PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "$ORIGIN")
+  target_link_options(hc-cadconv PRIVATE "LINKER:--disable-new-dtags")
 elseif(APPLE)
   set_target_properties(hc-cadconv PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH "@loader_path")
