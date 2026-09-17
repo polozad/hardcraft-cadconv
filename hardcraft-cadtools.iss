@@ -31,7 +31,14 @@
 ; (2026-09-02). the consumer's test suite now pins this #define to the code.
 ; (it is not a standalone product: it is the converter Hardcraft drives).
 #define AppName      "Hardcraft CAD Tools"
-#define AppVersion   "1.1.0"
+; 1.2.0 (2026-09-12): the placement block + the capability handshake. The
+; protocol did NOT move (both are additive), so nothing forced a version bump —
+; and that is exactly how TWO different binaries came to be called 1.1.0: the one
+; attached to the add-on releases up to 2026-09-10 emits neither, the one built on
+; 2026-09-11 emits both. At runtime `caps` tells them apart, which is what it is
+; for; a file name cannot. So the rule is: an additive CHANNEL still bumps this
+; version, even when it leaves PROTOCOL alone.
+#define AppVersion   "1.2.1"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"

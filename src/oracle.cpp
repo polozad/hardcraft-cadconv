@@ -340,7 +340,19 @@ std::vector<SeamRecord> face_seams(const TopoDS_Face &face, int idx)
   try
   {
     BRepAdaptor_Surface ad(face);
-    if (!(ad.IsUClosed() || ad.IsVClosed()))
+    // PERIODICITY, not «closed» (mirror of step2glb.py `_face_seams`,
+    // 9d26de5): `BRepAdaptor_Surface::IsUClosed` compares the FACE's trimmed
+    // u-range with the surface's natural bounds inside `Precision::PConfusion()`
+    // (1e-9), so a full-period cylinder whose trim carries a few 1e-9 of
+    // parametric dust answers False and loses its seam silently (live
+    // D:/p320/slide.stp face 72, the tube wall: u[-1.538e-9 .. 2pi] — 3 of that
+    // file's 16 seam-bearing cylinders were dropped this way). Periodicity is a
+    // property of the SURFACE and carries no trim dust; the authoritative test
+    // is the loop's own `BRep_Tool::IsClosed(edge, face)` below, untouched — a
+    // periodic surface trimmed to a mere sector simply has no such edge and
+    // still emits nothing. Additive: the record shape is unchanged.
+    if (!(ad.IsUClosed() || ad.IsVClosed() ||
+          ad.IsUPeriodic() || ad.IsVPeriodic()))
       return out;
   }
   catch (const Standard_Failure &)
