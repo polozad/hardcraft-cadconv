@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <Poly_Triangulation.hxx>
@@ -58,6 +59,19 @@ struct FaceGeom
   bool any() const { return has_o || has_d || has_x || has_rmaj; }
 };
 
+// `faces[].w` — the face's wires as GLOBAL edges[] indices, in the wire's own
+// LOOP ORDER. «Is this loop a cut-out or a scrap of soup» is guessed three ways
+// downstream today; OCC simply knows (`BRepTools::OuterWire`). A periodic
+// face's SEAM edge appears TWICE in its loop (once per pcurve — that is the
+// loop as CAD has it); an edge with no `edges[]` record (degenerate apex, mute
+// curve) is OMITTED and the loop stays a loop, one hop shorter.
+struct FaceWires
+{
+  bool present = false;
+  std::vector<int> outer;
+  std::vector<std::vector<int>> inner;
+};
+
 struct FaceRecord
 {
   std::string kind;                 // "plane" | "cylinder" | ... | "?"
@@ -68,6 +82,24 @@ struct FaceRecord
                                     // THE face<->primitive correlation: shell-order
                                     // text correlation broke on re-exports (entity
                                     // renumbering permutes it) — this is exact.
+  // The CAD-TOPOLOGY provision (2026-09-18). Every one of these is a fact OCC
+  // already holds; an absent flag means «unknown», never a wrong answer.
+  bool has_orient = false;
+  bool orient_rev = false;          // face.Orientation() == TopAbs_REVERSED
+  bool has_bounds = false;
+  double b[4] = {0, 0, 0, 0};       // [u0,u1,v0,v1], RAW OCC parameters — the
+                                    // SAME space UvRecord reads for pu/pv
+  FaceWires w;
+};
+
+// `edges[].p` — one edge's (u,v) trace on each adjacent face, in that face's RAW
+// OCC parameters. A LIST of traces per face: once normally, TWICE on a periodic
+// face's SEAM edge, where OCC holds two pcurves (one at each end of the period)
+// and picks between them by the edge's ORIENTATION. Each trace is a FLAT u,v run.
+struct EdgePcurve
+{
+  int face = 0;                     // GLOBAL oracle face index (the record's own `f`)
+  std::vector<std::vector<double>> traces;
 };
 
 struct EdgeRecord
@@ -77,6 +109,32 @@ struct EdgeRecord
   std::string kind;                 // "line" | "circle" | "ellipse" | "bspline" | "?"
   bool has_circle = false;
   double r = 0.0, c[3] = {0, 0, 0}, ax[3] = {0, 0, 0};
+  // An ELLIPSE was typed and its numbers thrown away until 2026-09-18: `r` is
+  // then the MAJOR radius, `r2` the minor, `xd` the major-axis direction.
+  bool has_ellipse = false;
+  double r2 = 0.0, xd[3] = {0, 0, 0};
+  std::vector<int> f;               // adjacent GLOBAL face indices, ascending,
+                                    // deduped (a seam edge names its face ONCE)
+  bool has_v = false;
+  int v[2] = {0, 0};                // [i0, i1] into verts[] (closed edge: equal)
+  std::vector<EdgePcurve> p;        // keyed by the very faces `f` just named
+};
+
+// One CAD 0-cell. An unreadable vertex emits `null` and keeps the INDEXING
+// honest — `edges[].v` indexes this list.
+struct VertRecord
+{
+  bool ok = false;
+  double p[3] = {0, 0, 0};
+};
+
+// The block's edge oracle plus the map that turns a wire's edge into its
+// position in `recs` (only the edges that PRODUCED a record, in record order,
+// so `recmap.FindIndex(edge) - 1` IS the record's index).
+struct EdgeOracle
+{
+  std::vector<EdgeRecord> recs;
+  TopTools_IndexedMapOfShape recmap;
 };
 
 struct SeamRecord
@@ -97,7 +155,26 @@ UvRecord face_uv_record(const TopoDS_Face &face,
 FaceRecord face_oracle(const TopoDS_Face &face, CloneSigs &sigs,
                        std::vector<std::string> &sig_order, int idx);
 
-std::vector<EdgeRecord> edge_oracle(const TopoDS_Shape &shape);
+// `faces`/`f0` are the block's face list and its global face offset, `vmap`/`v0`
+// the block's 0-cell map and its global offset — without them `f`, `p` and `v`
+// are simply absent and every consumer degrades to its own measurement (the
+// gradient law: a CAD fact adds precision, it never takes a route away). The
+// block is the unit of INDEXING, so both offsets are the caller's.
+EdgeOracle edge_oracle(const TopoDS_Shape &shape,
+                       const std::vector<TopoDS_Face> *faces = nullptr,
+                       int f0 = 0, int v0 = 0,
+                       const TopTools_IndexedMapOfShape *vmap = nullptr);
+
+// The block's CAD 0-cells (positions in oracle scale) and their TopExp map.
+// Today every consumer re-derives them from edge endpoints plus a «>=3 faces at
+// one quantised position» rule — a global-scale threshold with its own bug class.
+void block_verts(const TopoDS_Shape &shape, std::vector<VertRecord> &pts,
+                 TopTools_IndexedMapOfShape &vmap);
+
+// The face's wires as GLOBAL edges[] indices; `.present == false` when nothing
+// could be read (an absent key, never a wrong wire).
+FaceWires face_wires(const TopoDS_Face &face,
+                     const TopTools_IndexedMapOfShape &recmap, int e0);
 
 // 3D trace of every SEAM edge of a periodic face — the ONLY carrier of where a
 // wrap opens (the mesher welds the seam shut in the triangulation).

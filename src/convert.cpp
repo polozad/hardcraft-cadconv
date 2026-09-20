@@ -330,6 +330,7 @@ static void write_uv_sidecar(const std::string &glb_path,
 static void write_oracle_sidecar(const std::string &glb_path,
                                  const std::vector<FaceRecord> &faces,
                                  const std::vector<EdgeRecord> &edges,
+                                 const std::vector<VertRecord> &verts,
                                  const std::vector<SeamRecord> &seams,
                                  const CloneSigs &sigs,
                                  const std::vector<std::string> &sig_order)
@@ -379,6 +380,31 @@ static void write_oracle_sidecar(const std::string &glb_path,
       if (f.g.has_semi) j.kv("semi", f.g.semi);
       j.end_obj();
     }
+    if (f.has_orient) { j.key("o"); j.boolean(f.orient_rev); }
+    if (f.has_bounds)
+    {
+      j.key("b"); j.begin_arr(); for (double q : f.b) j.num(q); j.end_arr();
+    }
+    // `w` indexes edges[], so it follows the all-NURBS emptiness rule below:
+    // with the edge oracle dropped whole, a dangling index is worse than no fact
+    if (f.w.present && n_analytic)
+    {
+      j.key("w");
+      j.begin_obj();
+      j.key("o");
+      j.begin_arr(); for (int e : f.w.outer) j.num(e); j.end_arr();
+      if (!f.w.inner.empty())
+      {
+        j.key("i");
+        j.begin_arr();
+        for (const std::vector<int> &loop : f.w.inner)
+        {
+          j.begin_arr(); for (int e : loop) j.num(e); j.end_arr();
+        }
+        j.end_arr();
+      }
+      j.end_obj();
+    }
     j.end_obj();
   }
   j.end_arr();
@@ -394,12 +420,65 @@ static void write_oracle_sidecar(const std::string &glb_path,
       if (e.has_circle)
       {
         j.kv("r", e.r);
+        if (e.has_ellipse)
+          j.kv("r2", e.r2);
         j.key("c");  j.begin_arr(); for (double v : e.c) j.num(v); j.end_arr();
         j.key("ax"); j.begin_arr(); for (double v : e.ax) j.num(v); j.end_arr();
+        if (e.has_ellipse)
+        {
+          j.key("xd"); j.begin_arr(); for (double v : e.xd) j.num(v); j.end_arr();
+        }
+      }
+      if (!e.f.empty())
+      {
+        j.key("f"); j.begin_arr(); for (int g : e.f) j.num(g); j.end_arr();
+      }
+      if (!e.p.empty())
+      {
+        // keyed by the very faces `f` just named, as STRINGS
+        j.key("p");
+        j.begin_obj();
+        for (const EdgePcurve &pc : e.p)
+        {
+          j.key(std::to_string(pc.face).c_str());
+          j.begin_arr();
+          for (const std::vector<double> &t : pc.traces)
+          {
+            j.begin_arr();
+            for (size_t k = 0; k + 1 < t.size(); k += 2)
+            {
+              j.begin_arr(); j.num(t[k]); j.num(t[k + 1]); j.end_arr();
+            }
+            j.end_arr();
+          }
+          j.end_arr();
+        }
+        j.end_obj();
+      }
+      if (e.has_v)
+      {
+        j.key("v"); j.begin_arr(); j.num(e.v[0]); j.num(e.v[1]); j.end_arr();
       }
       j.end_obj();
     }
   j.end_arr();
+  // the 0-cells `edges[].v` indexes — dropped with the edge oracle for the
+  // same reason `faces[].w` is
+  if (n_analytic && !verts.empty())
+  {
+    j.key("verts");
+    j.begin_arr();
+    for (const VertRecord &v : verts)
+    {
+      if (!v.ok)
+      {
+        j.null();                   // a mute 0-cell keeps the INDEXING honest
+        continue;
+      }
+      j.begin_arr(); for (double q : v.p) j.num(q); j.end_arr();
+    }
+    j.end_arr();
+  }
 
   std::vector<const std::vector<int> *> clones;
   for (const std::string &s : sig_order)
@@ -501,6 +580,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
   std::vector<UvRecord> uv_faces;
   std::vector<FaceRecord> orc_faces;
   std::vector<EdgeRecord> orc_edges;
+  std::vector<VertRecord> orc_verts;   // the CAD 0-cells, one global list
   std::vector<SeamRecord> orc_seams;
   CloneSigs sigs;
   std::vector<std::string> sig_order;
@@ -511,10 +591,24 @@ int convert(const std::string &step_path, const std::string &glb_path,
   auto close_block = [&](const std::vector<TopoDS_Face> &faces, int f0,
                          const std::string &name, EdgeTally &ed, bool closed) {
     const int e0 = static_cast<int>(orc_edges.size());
+    const int v0 = static_cast<int>(orc_verts.size());
     if (!faces.empty())
     {
-      const std::vector<EdgeRecord> e = edge_oracle(block_shape(faces));
-      orc_edges.insert(orc_edges.end(), e.begin(), e.end());
+      // The block is the unit of INDEXING (the import slices every channel by
+      // these counts), so the topology provision is sealed here too: the
+      // block's 0-cells join the global verts[], its edges are read WITH the
+      // block's face list so `edges[].f` can carry GLOBAL face indices, and
+      // only now — once the block's edge records exist — can each face be
+      // stamped with its wires as edges[] indices.
+      const TopoDS_Shape shape = block_shape(faces);
+      std::vector<VertRecord> vpts;
+      TopTools_IndexedMapOfShape vmap;
+      block_verts(shape, vpts, vmap);
+      orc_verts.insert(orc_verts.end(), vpts.begin(), vpts.end());
+      const EdgeOracle eo = edge_oracle(shape, &faces, f0, v0, &vmap);
+      orc_edges.insert(orc_edges.end(), eo.recs.begin(), eo.recs.end());
+      for (size_t j = 0; j < faces.size(); ++j)
+        orc_faces[f0 + j].w = face_wires(faces[j], eo.recmap, e0);
     }
     // only a body meant to CLOSE can be torn — a sheet body's rim is not
     const int torn = closed ? tally_tears(ed) : 0;
@@ -526,6 +620,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
     po.name = name;
     po.n = static_cast<int>(orc_faces.size()) - f0;
     po.ne = static_cast<int>(orc_edges.size()) - e0;
+    po.nv = static_cast<int>(orc_verts.size()) - v0;
     po.torn = torn;
     parts.push_back(po);
     ed.clear();
@@ -662,6 +757,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
       j.kv("name", p.name);
       j.kv("n", p.n);
       j.kv("ne", p.ne);
+      j.kv("nv", p.nv);
       j.kv("torn", p.torn);
       j.end_obj();
     }
@@ -673,8 +769,8 @@ int convert(const std::string &step_path, const std::string &glb_path,
   }
 
   write_uv_sidecar(glb_path, uv_faces);
-  write_oracle_sidecar(glb_path, orc_faces, orc_edges, orc_seams, sigs,
-                       sig_order);
+  write_oracle_sidecar(glb_path, orc_faces, orc_edges, orc_verts, orc_seams,
+                       sigs, sig_order);
 
   RWGltf_CafWriter writer(TCollection_AsciiString(glb_path.c_str()),
                           Standard_True);       // True = binary .glb

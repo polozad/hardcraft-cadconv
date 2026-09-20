@@ -44,6 +44,7 @@ struct PartOut
   std::string name;
   int n = 0;                        // faces (== primitives) in the block
   int ne = 0;                       // oracle edge records of the block
+  int nv = 0;                       // oracle 0-cells (verts[]) of the block
   int torn = 0;                     // unpaired triangulation edges (closed only)
 };
 

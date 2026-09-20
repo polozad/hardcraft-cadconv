@@ -38,7 +38,7 @@ static const int PROTOCOL = 2;
 // The channels this build emits. Present = authoritative; a consumer that sees
 // NO caps key must treat it as UNKNOWN (an older converter) and go on probing
 // the data, never as "this converter emits nothing".
-static const char *CAPS = "\"placement\",\"eids\",\"seams\",\"uv\",\"parts\"";
+static const char *CAPS = "\"placement\",\"eids\",\"seams\",\"uv\",\"parts\",\"topology\"";
 
 static int handshake()
 {

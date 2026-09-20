@@ -3,21 +3,30 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Curve2d.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
+#include <Geom2d_Curve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
@@ -266,6 +275,34 @@ FaceRecord face_oracle(const TopoDS_Face &face, CloneSigs &sigs,
   {
     rec.g = FaceGeom();        // a mute surface loses its placement, not the run
   }
+  try
+  {
+    rec.orient_rev = (face.Orientation() == TopAbs_REVERSED);
+    rec.has_orient = true;
+  }
+  catch (const Standard_Failure &)
+  {
+    rec.has_orient = false;         // no flag = unknown, never a wrong sign
+  }
+  try
+  {
+    const double bb[4] = {ad.FirstUParameter(), ad.LastUParameter(),
+                          ad.FirstVParameter(), ad.LastVParameter()};
+    bool fin = true;
+    for (double q : bb)
+      if (!std::isfinite(q))
+        fin = false;
+    if (fin)                        // an unbounded (infinite) trim is no fact
+    {
+      for (int k = 0; k < 4; ++k)
+        rec.b[k] = bb[k];
+      rec.has_bounds = true;
+    }
+  }
+  catch (const Standard_Failure &)
+  {
+    rec.has_bounds = false;
+  }
   std::string sig;
   try
   {
@@ -292,25 +329,177 @@ FaceRecord face_oracle(const TopoDS_Face &face, CloneSigs &sigs,
   return rec;
 }
 
-std::vector<EdgeRecord> edge_oracle(const TopoDS_Shape &shape)
+// How densely a CURVED pcurve is sampled. 16 is `face_seams`'s count for the 3D
+// seam trace on purpose: the two traces of one seam edge then have the same
+// station count and can be compared point for point. A 2D LINE is exact at 2
+// points and takes them (most of a hard-surface model's pcurves are lines: a
+// ruling on a cylinder, a rim at v=const, any edge of a plane).
+static const int PCURVE_SAMPLES = 16;
+
+// One (u,v) polyline of `edge` on `face`, in the face's RAW OCC parameters —
+// or false when the edge has no curve on that surface.
+//
+// Sampled, not analytic, and deliberately so: the consumer walks a POLYLINE
+// against the mesh boundary, and handing it a line here and a circle there
+// would make every reader carry an evaluator per 2D curve type. Rounded to 6
+// decimals, the SAME quantum the uv chart this trace has to land in uses.
+static bool pcurve_trace(const TopoDS_Edge &edge, const TopoDS_Face &face,
+                         std::vector<double> &out)
+{
+  out.clear();
+  try
+  {
+    Standard_Real cf = 0.0, cl = 0.0;
+    const Handle(Geom2d_Curve) c = BRep_Tool::CurveOnSurface(edge, face, cf, cl);
+    if (c.IsNull())
+      return false;                 // no pcurve here — absent, not wrong
+    BRepAdaptor_Curve2d c2(edge, face);
+    const double t0 = c2.FirstParameter(), t1 = c2.LastParameter();
+    if (!(std::isfinite(t0) && std::isfinite(t1)))
+      return false;
+    const int n = (c2.GetType() == GeomAbs_Line) ? 1 : PCURVE_SAMPLES;
+    for (int k = 0; k <= n; ++k)
+    {
+      const gp_Pnt2d q = c2.Value(t0 + (t1 - t0) * k / static_cast<double>(n));
+      if (!(std::isfinite(q.X()) && std::isfinite(q.Y())))
+        return false;
+      out.push_back(round_to(q.X(), 6));
+      out.push_back(round_to(q.Y(), 6));
+    }
+  }
+  catch (const Standard_Failure &)
+  {
+    out.clear();
+    return false;                   // one mute pcurve costs one trace only
+  }
+  return !out.empty();
+}
+
+// `edges[].p` — the edge's (u,v) trace on each adjacent face. The value is a
+// LIST of traces per face, and its length is exactly how many times the edge
+// appears in that face's wires (`faces[].w`): once normally, TWICE on a
+// periodic face's SEAM edge, where OCC stores two pcurves — one at each end of
+// the period — and picks between them by the edge's ORIENTATION. FORWARD
+// first, then REVERSED, so the order is the file's and not the traversal's.
+//
+// UNITS: raw OCC parameters, NOT scaled by ORACLE_SCALE — the same space as
+// `faces[].b` and the uv chart (a plane's u/v are OCC mm; a cylinder's u is
+// radians, and one factor cannot be right for both).
+static void edge_pcurves(const TopoDS_Edge &edge,
+                         const std::map<int, TopoDS_Face> &adj,
+                         std::vector<EdgePcurve> &out)
+{
+  for (const auto &kv : adj)
+  {
+    const TopoDS_Face &face = kv.second;
+    bool seam = false;
+    try
+    {
+      seam = (BRep_Tool::IsClosed(edge, face) == Standard_True);
+    }
+    catch (const Standard_Failure &)
+    {
+      seam = false;
+    }
+    TopAbs_Orientation ors[2];
+    int nors = 1;
+    if (seam)
+    {
+      ors[0] = TopAbs_FORWARD;
+      ors[1] = TopAbs_REVERSED;
+      nors = 2;
+    }
+    else
+      ors[0] = edge.Orientation();  // only one representation to find
+    EdgePcurve rec;
+    rec.face = kv.first;
+    for (int i = 0; i < nors; ++i)
+    {
+      TopoDS_Edge eo;
+      try
+      {
+        eo = TopoDS::Edge(edge.Oriented(ors[i]));
+      }
+      catch (const Standard_Failure &)
+      {
+        continue;
+      }
+      std::vector<double> t;
+      if (pcurve_trace(eo, face, t))
+        rec.traces.push_back(t);
+    }
+    if (!rec.traces.empty())
+      out.push_back(rec);
+  }
+}
+
+void block_verts(const TopoDS_Shape &shape, std::vector<VertRecord> &pts,
+                 TopTools_IndexedMapOfShape &vmap)
+{
+  pts.clear();
+  vmap.Clear();
+  TopExp::MapShapes(shape, TopAbs_VERTEX, vmap);
+  const double s = ORACLE_SCALE;
+  for (int i = 1; i <= vmap.Extent(); ++i)
+  {
+    VertRecord v;
+    try
+    {
+      const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(vmap.FindKey(i)));
+      v.p[0] = p.X() * s; v.p[1] = p.Y() * s; v.p[2] = p.Z() * s;
+      v.ok = true;
+    }
+    catch (const Standard_Failure &)
+    {
+      v.ok = false;                 // a mute 0-cell keeps the INDEXING honest
+    }
+    pts.push_back(v);
+  }
+}
+
+EdgeOracle edge_oracle(const TopoDS_Shape &shape,
+                       const std::vector<TopoDS_Face> *faces, int f0, int v0,
+                       const TopTools_IndexedMapOfShape *vmap)
 {
   TopTools_IndexedMapOfShape emap;
   TopExp::MapShapes(shape, TopAbs_EDGE, emap);
-  std::vector<EdgeRecord> out;
+  // the block's faces as a LOCAL index, so an ancestor can be named globally
+  TopTools_IndexedMapOfShape fmap;
+  if (faces)
+    for (const TopoDS_Face &f : *faces)
+      fmap.Add(f);
+  TopTools_IndexedDataMapOfShapeListOfShape amap;
+  bool has_amap = false;
+  if (faces && !faces->empty())
+  {
+    try
+    {
+      TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, amap);
+      has_amap = true;
+    }
+    catch (const Standard_Failure &)
+    {
+      has_amap = false;             // no adjacency = one absent key, not a fail
+    }
+  }
+  EdgeOracle out;
   for (int i = 1; i <= emap.Extent(); ++i)
   {
     const TopoDS_Edge edge = TopoDS::Edge(emap.FindKey(i));
     if (BRep_Tool::Degenerated(edge))
       continue;                     // apex/seam degenerates carry no curve
     EdgeRecord rec;
+    TopoDS_Vertex va, vb;
     try
     {
       BRepAdaptor_Curve ad(edge);
       rec.kind = curve_kind(ad.GetType());
       // endpoints = the BREP vertex points, i.e. what the mesher pins its
       // boundary nodes to
-      const gp_Pnt p0 = BRep_Tool::Pnt(TopExp::FirstVertex(edge));
-      const gp_Pnt p1 = BRep_Tool::Pnt(TopExp::LastVertex(edge));
+      va = TopExp::FirstVertex(edge);
+      vb = TopExp::LastVertex(edge);
+      const gp_Pnt p0 = BRep_Tool::Pnt(va);
+      const gp_Pnt p1 = BRep_Tool::Pnt(vb);
       const double s = ORACLE_SCALE;
       rec.a[0] = p0.X() * s; rec.a[1] = p0.Y() * s; rec.a[2] = p0.Z() * s;
       rec.b[0] = p1.X() * s; rec.b[1] = p1.Y() * s; rec.b[2] = p1.Z() * s;
@@ -324,13 +513,144 @@ std::vector<EdgeRecord> edge_oracle(const TopoDS_Shape &shape)
         rec.c[0] = o.X() * s; rec.c[1] = o.Y() * s; rec.c[2] = o.Z() * s;
         rec.ax[0] = ax.X(); rec.ax[1] = ax.Y(); rec.ax[2] = ax.Z();
       }
+      else if (rec.kind == "ellipse")
+      {
+        // typed and thrown away until 2026-09-18 — the same four lines the
+        // circle branch has, plus the minor radius and the major-axis
+        // direction an ellipse needs to be one
+        try
+        {
+          const gp_Elips el = ad.Ellipse();
+          const gp_Pnt o = el.Location();
+          const gp_Dir ax = el.Axis().Direction();
+          const gp_Dir xd = el.XAxis().Direction();   // the MAJOR axis
+          rec.has_circle = true;
+          rec.has_ellipse = true;
+          rec.r = el.MajorRadius() * s;
+          rec.r2 = el.MinorRadius() * s;
+          rec.c[0] = o.X() * s; rec.c[1] = o.Y() * s; rec.c[2] = o.Z() * s;
+          rec.ax[0] = ax.X(); rec.ax[1] = ax.Y(); rec.ax[2] = ax.Z();
+          rec.xd[0] = xd.X(); rec.xd[1] = xd.Y(); rec.xd[2] = xd.Z();
+        }
+        catch (const Standard_Failure &)
+        {
+          rec.has_circle = false;
+          rec.has_ellipse = false;  // typed ellipse without numbers, as before
+        }
+      }
     }
     catch (const Standard_Failure &)
     {
       continue;                     // one mute edge drops one record only
     }
-    out.push_back(rec);
+    if (has_amap)
+    {
+      try
+      {
+        std::map<int, TopoDS_Face> seen;   // ascending + deduped by construction
+        const TopTools_ListOfShape &anc = amap.FindFromKey(edge);
+        for (TopTools_ListOfShape::Iterator it(anc); it.More(); it.Next())
+        {
+          const int j = fmap.FindIndex(it.Value());
+          if (j)                    // a face outside this block cannot be named
+            seen.emplace(f0 + j - 1, TopoDS::Face(it.Value()));
+        }
+        if (!seen.empty())
+        {
+          for (const auto &kv : seen)
+            rec.f.push_back(kv.first);
+          // the pcurves ride the SAME adjacency (one traversal, one answer):
+          // `p`'s faces are `f`'s entries
+          edge_pcurves(edge, seen, rec.p);
+        }
+      }
+      catch (const Standard_Failure &)
+      {
+        rec.f.clear();
+        rec.p.clear();
+      }
+    }
+    if (vmap)
+    {
+      try
+      {
+        const int ia = vmap->FindIndex(va), ib = vmap->FindIndex(vb);
+        if (ia && ib)
+        {
+          rec.v[0] = v0 + ia - 1;
+          rec.v[1] = v0 + ib - 1;
+          rec.has_v = true;
+        }
+      }
+      catch (const Standard_Failure &)
+      {
+        rec.has_v = false;
+      }
+    }
+    out.recs.push_back(rec);
+    out.recmap.Add(edge);
   }
+  return out;
+}
+
+FaceWires face_wires(const TopoDS_Face &face,
+                     const TopTools_IndexedMapOfShape &recmap, int e0)
+{
+  TopoDS_Shape outer;
+  try
+  {
+    outer = BRepTools::OuterWire(face);
+  }
+  catch (const Standard_Failure &)
+  {
+    outer = TopoDS_Shape();
+  }
+
+  // the face-aware WireExplorer ctor, or a seam wire mis-orders
+  auto loop = [&](const TopoDS_Wire &w) {
+    std::vector<int> idx;
+    try
+    {
+      for (BRepTools_WireExplorer ex(w, face); ex.More(); ex.Next())
+      {
+        const int j = recmap.FindIndex(ex.Current());
+        if (j)                      // no record (degenerate / mute) = omitted
+          idx.push_back(e0 + j - 1);
+      }
+    }
+    catch (const Standard_Failure &)
+    {
+      return idx;
+    }
+    return idx;
+  };
+
+  FaceWires out;
+  bool got_outer = false;
+  std::vector<std::vector<int>> inner;
+  try
+  {
+    for (TopExp_Explorer ex(face, TopAbs_WIRE); ex.More(); ex.Next())
+    {
+      const TopoDS_Wire w = TopoDS::Wire(ex.Current());
+      std::vector<int> l = loop(w);
+      if (!outer.IsNull() && w.IsSame(outer))
+      {
+        out.outer = l;
+        got_outer = true;
+      }
+      else
+        inner.push_back(l);
+    }
+  }
+  catch (const Standard_Failure &)
+  {
+    return FaceWires();             // absent key, never a wrong wire
+  }
+  if (!got_outer && inner.empty())
+    return FaceWires();
+  out.inner = inner;
+  out.present = true;
   return out;
 }
 

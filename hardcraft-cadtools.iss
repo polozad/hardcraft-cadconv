@@ -38,7 +38,7 @@
 ; 2026-09-11 emits both. At runtime `caps` tells them apart, which is what it is
 ; for; a file name cannot. So the rule is: an additive CHANNEL still bumps this
 ; version, even when it leaves PROTOCOL alone.
-#define AppVersion   "1.2.1"
+#define AppVersion   "1.2.2"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"
