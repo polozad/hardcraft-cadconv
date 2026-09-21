@@ -27,13 +27,16 @@ structure next to a mesh. MIT — see `LICENSE`.
 
 ## Install
 
-Windows: download `hardcraft-cadtools-<version>-win64.exe` from
-[Releases](../../releases) and run it. It installs **per user**, no administrator
-rights, nothing written outside your profile.
+Every asset is named the same way: `hc-cadconv-<version>-<platform>`.
 
-macOS / Linux: download `hc-cadconv-<platform>.tar.gz` from the same page, unpack
-it anywhere, and run `hc-cadconv` from inside the folder — it finds its libraries
-next to itself.
+Windows: download `hc-cadconv-<version>-win-64.exe` from
+[Releases](../../releases) and run it — it is an installer. It installs **per
+user**, no administrator rights, nothing written outside your profile.
+(Releases up to 1.2.2 called this file `hardcraft-cadtools-<version>-win64.exe`.)
+
+macOS / Linux: download `hc-cadconv-<version>-<platform>.tar.gz` from the same
+page, unpack it anywhere, and run `hc-cadconv` from inside the folder — it finds
+its libraries next to itself.
 
 On macOS the binaries are **ad-hoc signed**, which is enough for the loader and
 not enough for Gatekeeper: a downloaded copy is quarantined and the first run is

@@ -188,9 +188,9 @@ jobs:
             choco install innosetup -y --no-progress | Out-Null
             $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           }
-          & $iscc hardcraft-cadtools.iss
+          & $iscc hc-cadconv.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
-          $exe = Get-ChildItem dist\hardcraft-cadtools-*-win64.exe | Select-Object -First 1
+          $exe = Get-ChildItem dist\hc-cadconv-*-win-64.exe | Select-Object -First 1
           $sha = (Get-FileHash $exe -Algorithm SHA256).Hash
           "$sha  $($exe.Name)" | Tee-Object -FilePath "$($exe.FullName).sha256"
           "### $($exe.Name)`n`nSHA-256: ``$sha``  ($([math]::Round($exe.Length/1MB,1)) MB)" >> $env:GITHUB_STEP_SUMMARY
@@ -210,7 +210,7 @@ jobs:
           # say which release it came from, and a release page with several
           # versions offers the same name twice.
           ver=$(sed -n 's/^#define AppVersion *"\([^"]*\)".*/\1/p' \
-                hardcraft-cadtools.iss)
+                hc-cadconv.iss)
           test -n "$ver" || { echo "no AppVersion in the .iss"; exit 1; }
           name="hc-cadconv-$ver-${{ matrix.triple }}.tar.gz"
           tar -C dist -czf "dist/$name" hc-cadconv
@@ -257,8 +257,8 @@ jobs:
           name: hc-cadconv-${{ matrix.triple }}
           path: |
             dist/hc-cadconv/
-            dist/hardcraft-cadtools-*-win64.exe
-            dist/hardcraft-cadtools-*-win64.exe.sha256
+            dist/hc-cadconv-*-win-64.exe
+            dist/hc-cadconv-*-win-64.exe.sha256
             dist/hc-cadconv-*.tar.gz
             dist/hc-cadconv-*.tar.gz.sha256
             dist/hc-cadconv-*.manifest.json

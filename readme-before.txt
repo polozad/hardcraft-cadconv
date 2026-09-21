@@ -1,4 +1,4 @@
-Hardcraft CAD Tools — the STEP converter for the Hardcraft Blender add-on.
+hc-cadconv — the STEP converter for the Hardcraft Blender add-on.
 
 WHAT THIS IS
   A command-line converter the add-on calls when you import a STEP file. It

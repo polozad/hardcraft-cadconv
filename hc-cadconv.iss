@@ -1,4 +1,4 @@
-; Hardcraft CAD Tools — the STEP converter package.
+; hc-cadconv — the STEP converter package for Windows.
 ;
 ; PER-USER by design — we are asking people to run a binary, so ask for as
 ; little as possible in return: PrivilegesRequired=lowest
@@ -16,7 +16,7 @@
 ; dynamic linking is what lets us keep our own source closed, and the libraries
 ; must stay replaceable. Their licence + the OCCT exception ship alongside.
 ;
-; Build:  ISCC.exe tools\cadconv\hardcraft-cadtools.iss
+; Build:  ISCC.exe tools\cadconv\hc-cadconv.iss
 ; (payload must exist: tools\cadconv\dist\hc-cadconv\)
 
 ; VERSION IS THE CONVERTER'S OWN, deliberately NOT the add-on's. The converter is
@@ -30,7 +30,7 @@
 ; the bump to 2 and every STEP tester hit "converter protocol 1, addon expects 2"
 ; (2026-09-02). the consumer's test suite now pins this #define to the code.
 ; (it is not a standalone product: it is the converter Hardcraft drives).
-#define AppName      "Hardcraft CAD Tools"
+#define AppName      "Hardcraft CAD converter"
 ; 1.2.0 (2026-09-12): the placement block + the capability handshake. The
 ; protocol did NOT move (both are additive), so nothing forced a version bump —
 ; and that is exactly how TWO different binaries came to be called 1.1.0: the one
@@ -70,7 +70,15 @@ UninstallDisplayIcon={app}\hc-cadconv.exe
 
 ; ── output ────────────────────────────────────────────────────────────────────
 OutputDir=dist
-OutputBaseFilename=hardcraft-cadtools-{#AppVersion}-win64
+; ONE stem for every platform: `hc-cadconv-<version>-<triple>`, the name of
+; the binary itself, of the CMake target, of the public repo and of the
+; manifest the consumer reads. Until 1.2.2 this file alone said
+; `hardcraft-cadtools-<version>-win64` — a product name for a package that
+; holds ONE tool, in a spelling (`win64`) that matched no other asset. Two
+; stems and two spellings of the triple on the same release page is what the
+; artist saw; `tools/release.py` still accepts the old name so the assets
+; already published stay resolvable.
+OutputBaseFilename=hc-cadconv-{#AppVersion}-win-64
 AppComments=Speaks converter protocol {#Protocol}; compatibility is decided by the protocol handshake, not by matching the add-on's version.
 Compression=lzma2/max
 SolidCompression=yes
