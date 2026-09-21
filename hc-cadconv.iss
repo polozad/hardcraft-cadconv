@@ -38,7 +38,13 @@
 ; 2026-09-11 emits both. At runtime `caps` tells them apart, which is what it is
 ; for; a file name cannot. So the rule is: an additive CHANNEL still bumps this
 ; version, even when it leaves PROTOCOL alone.
-#define AppVersion   "1.2.2"
+; 1.2.3 (2026-09-21): NOTHING functional — the asset rename alone. The rule above
+; is about channels; this is its mirror image. 1.2.2 was published as
+; `hardcraft-cadtools-1.2.2-win64.exe`, so re-cutting 1.2.2 under the new name
+; would give ONE build TWO names — the same ambiguity as two builds under one
+; name, and `caps` cannot help: they tell contents apart, not file names. A
+; version is cheap; an ambiguous artifact is not.
+#define AppVersion   "1.2.3"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"
