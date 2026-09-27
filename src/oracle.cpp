@@ -166,6 +166,51 @@ static std::string surf_sig(BRepAdaptor_Surface &ad)
   return std::string();
 }
 
+// (pu, pv): the parametric period of each axis the FACE wraps (0 = open).
+// Mirror of step2glb.py `_closed_periods`. `IsUClosed` alone is the
+// trim-match trap `face_seams` already left (9d26de5): it compares the face's
+// trimmed range with the surface's bounds inside PConfusion (1e-9), and a
+// wrapped face's trim can UNDERSHOOT that (slide.stp face 72: u[-1.5e-9, 2pi])
+// or OVERSHOOT it (striker.stp face 68: u[0, 6.283221], 3.6e-5 past 2pi) —
+// both answered «open» and the period table lost a full cylinder. A closed
+// answer keeps its legacy value. Else the authority is topological, as in
+// `face_seams`: the face wraps iff its wire carries a seam edge
+// (`BRep_Tool::IsClosed(edge, face)`); the wrapped axis is the periodic one
+// whose trim spans a full period (±1e-4 of it), and the period is the
+// SURFACE's own, not the trimmed width.
+static void closed_periods(const TopoDS_Face &face, double &pu, double &pv)
+{
+  BRepAdaptor_Surface ad(face);
+  const double us = std::fabs(ad.LastUParameter() - ad.FirstUParameter());
+  const double vs = std::fabs(ad.LastVParameter() - ad.FirstVParameter());
+  pu = ad.IsUClosed() ? us : 0.0;
+  pv = ad.IsVClosed() ? vs : 0.0;
+  if ((pu != 0.0 && pv != 0.0) || !(ad.IsUPeriodic() || ad.IsVPeriodic()))
+    return;
+  TopTools_IndexedMapOfShape emap;
+  TopExp::MapShapes(face, TopAbs_EDGE, emap);
+  bool seam = false;
+  for (int i = 1; i <= emap.Extent() && !seam; ++i)
+  {
+    const TopoDS_Edge edge = TopoDS::Edge(emap.FindKey(i));
+    seam = !BRep_Tool::Degenerated(edge) && BRep_Tool::IsClosed(edge, face);
+  }
+  if (!seam)
+    return;
+  if (pu == 0.0 && ad.IsUPeriodic())
+  {
+    const double per = ad.UPeriod();
+    if (std::fabs(us - per) <= 1e-4 * per)
+      pu = per;
+  }
+  if (pv == 0.0 && ad.IsVPeriodic())
+  {
+    const double per = ad.VPeriod();
+    if (std::fabs(vs - per) <= 1e-4 * per)
+      pv = per;
+  }
+}
+
 UvRecord face_uv_record(const TopoDS_Face &face,
                         const Handle(Poly_Triangulation) & tri)
 {
@@ -181,11 +226,7 @@ UvRecord face_uv_record(const TopoDS_Face &face,
     rec.uv.push_back(round_to(p.X(), 6));
     rec.uv.push_back(round_to(p.Y(), 6));
   }
-  BRepAdaptor_Surface ad(face);
-  if (ad.IsUClosed())
-    rec.pu = std::fabs(ad.LastUParameter() - ad.FirstUParameter());
-  if (ad.IsVClosed())
-    rec.pv = std::fabs(ad.LastVParameter() - ad.FirstVParameter());
+  closed_periods(face, rec.pu, rec.pv);
   return rec;
 }
 

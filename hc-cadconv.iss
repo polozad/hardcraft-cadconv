@@ -44,7 +44,12 @@
 ; would give ONE build TWO names — the same ambiguity as two builds under one
 ; name, and `caps` cannot help: they tell contents apart, not file names. A
 ; version is cheap; an ambiguous artifact is not.
-#define AppVersion   "1.2.3"
+; 1.2.4 (2026-09-27): a wrapped face whose trim over- or undershoots its period
+; by more than 1e-9 gets its period in the uv sidecar (was 0 — striker face 68,
+; slide face 72: the seam emitter had already moved to the seam-edge test, the
+; period record beside it had not); the Windows `.sha256` is LF + lowercase, so
+; `sha256sum -c` passes on unix. No PROTOCOL change, no new channel.
+#define AppVersion   "1.2.4"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"

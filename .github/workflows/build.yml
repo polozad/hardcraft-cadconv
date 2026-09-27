@@ -191,8 +191,12 @@ jobs:
           & $iscc hc-cadconv.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
           $exe = Get-ChildItem dist\hc-cadconv-*-win-64.exe | Select-Object -First 1
-          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash
-          "$sha  $($exe.Name)" | Tee-Object -FilePath "$($exe.FullName).sha256"
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          # LF + lowercase, the line `shasum -c` / `sha256sum -c` expect: Tee-Object
+          # wrote CRLF, and the unix checker looked for a file name ending in CR
+          $line = "$sha  $($exe.Name)"
+          [IO.File]::WriteAllText("$($exe.FullName).sha256", "$line`n")
+          $line
           "### $($exe.Name)`n`nSHA-256: ``$sha``  ($([math]::Round($exe.Length/1MB,1)) MB)" >> $env:GITHUB_STEP_SUMMARY
 
       # mac/linux ship a FOLDER, and a folder cannot be attached to a release.
