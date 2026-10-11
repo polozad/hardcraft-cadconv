@@ -63,6 +63,19 @@ static const char *surf_kind(GeomAbs_SurfaceType t)
   }
 }
 
+const char *face_kind(const TopoDS_Face &face)
+{
+  try
+  {
+    BRepAdaptor_Surface ad(face);
+    return surf_kind(ad.GetType());
+  }
+  catch (const Standard_Failure &)
+  {
+    return "?";
+  }
+}
+
 static const char *curve_kind(GeomAbs_CurveType t)
 {
   switch (t)

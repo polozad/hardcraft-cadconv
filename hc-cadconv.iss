@@ -49,7 +49,13 @@
 ; slide face 72: the seam emitter had already moved to the seam-edge test, the
 ; period record beside it had not); the Windows `.sha256` is LF + lowercase, so
 ; `sha256sum -c` passes on unix. No PROTOCOL change, no new channel.
-#define AppVersion   "1.2.4"
+; 1.2.5 (2026-10-11): the face -> STEP entity lookup is indexed once instead of
+; scanned per face (axg.stp: 45 s -> 11.5 s, 33.5 s of it was that scan; output
+; byte-identical); a face that will not reach the mesh is NAMED in the log
+; (#ident, surface kind, size, centre — the import note shows it); one stage-
+; timing line. Text only: no PROTOCOL change, no new channel. 1.2.4 was built
+; in CI but never released — superseded, not re-cut under its name.
+#define AppVersion   "1.2.5"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"

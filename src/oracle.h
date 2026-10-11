@@ -179,3 +179,7 @@ FaceWires face_wires(const TopoDS_Face &face,
 // 3D trace of every SEAM edge of a periodic face — the ONLY carrier of where a
 // wrap opens (the mesher welds the seam shut in the triangulation).
 std::vector<SeamRecord> face_seams(const TopoDS_Face &face, int idx);
+
+// The face's surface kind as the oracle names it ("plane", "bspline", …), for
+// the import log's lost-face lines; "?" when the surface cannot be read.
+const char *face_kind(const TopoDS_Face &face);

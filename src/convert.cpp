@@ -11,7 +11,9 @@
 #include "refine.h"
 
 #include <cctype>
+#include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -39,6 +41,10 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_TShape.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <TransferBRep.hxx>
+#include <Transfer_TransientProcess.hxx>
 #include <TopLoc_Location.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
@@ -46,6 +52,8 @@
 #include <XSControl_WorkSession.hxx>
 #include <Interface_InterfaceModel.hxx>
 #include <StepData_StepModel.hxx>
+#include <StepGeom_Surface.hxx>
+#include <StepShape_FaceSurface.hxx>
 
 // math.radians without <cmath>'s M_PI (not standard on MSVC without a define)
 static const double DEG2RAD = 0.017453292519943295;
@@ -237,18 +245,79 @@ static double defl_floor_mm(const TopoDS_Shape &shape)
 // ORDER broke on re-exports (Plasticity renumbers entities, the sort-by-id
 // order permutes, every identity lands on the wrong face — live round 9).
 // A located copy (assembly placement) may miss the map — retried unlocated.
-static int face_eid(const Handle(XSControl_TransferReader) & tr,
+//
+// The lookup goes through `EidIndex`, built ONCE per conversion:
+// `EntityFromShapeResult(shape, -1)` scans every mapped entity of the transfer
+// per call, so one call per face was O(faces x entities) — 33.5 s of axg.stp's
+// 45 s import (2026-10-11). The index buckets the mapped FACE results by TShape
+// (OCC's three matches — equal, same, partner — all share it) in mapping order,
+// and `find` keeps OCC's priorities: the first EQUAL shape, else the last SAME
+// one, else the last PARTNER. Same entity, same #ident, as the scan.
+class EidIndex
+{
+public:
+  explicit EidIndex(const Handle(XSControl_TransferReader) & tr)
+  {
+    if (tr.IsNull())
+      return;
+    const Handle(Transfer_TransientProcess) tp = tr->TransientProcess();
+    if (tp.IsNull())
+      return;
+    for (int i = 1; i <= tp->NbMapped(); ++i)
+    {
+      try
+      {
+        const Handle(Standard_Transient) ent = tp->Mapped(i);
+        const TopoDS_Shape sh = TransferBRep::ShapeResult(tp, ent);
+        if (sh.IsNull() || sh.ShapeType() != TopAbs_FACE)
+          continue;
+        by_tshape_[sh.TShape().get()].push_back(Entry{sh, ent});
+      }
+      catch (const Standard_Failure &)
+      {
+        continue;
+      }
+    }
+  }
+
+  Handle(Standard_Transient) find(const TopoDS_Shape &res) const
+  {
+    Handle(Standard_Transient) same, partner;
+    const auto it = by_tshape_.find(res.TShape().get());
+    if (it == by_tshape_.end())
+      return partner;
+    for (const Entry &c : it->second)
+    {
+      if (c.shape == res)
+        return c.ent;
+      if (c.shape.IsSame(res))
+        same = c.ent;
+      partner = c.ent;              // one TShape: every candidate is a partner
+    }
+    return !same.IsNull() ? same : partner;
+  }
+
+private:
+  struct Entry
+  {
+    TopoDS_Shape shape;
+    Handle(Standard_Transient) ent;
+  };
+  std::unordered_map<const TopoDS_TShape *, std::vector<Entry>> by_tshape_;
+};
+
+static int face_eid(const EidIndex &eids,
                     const Handle(StepData_StepModel) & model,
                     const TopoDS_Face &face)
 {
-  if (tr.IsNull() || model.IsNull())
+  if (model.IsNull())
     return 0;
   const TopoDS_Shape variants[2] = {face, face.Located(TopLoc_Location())};
   for (const TopoDS_Shape &shp : variants)
   {
     try
     {
-      const Handle(Standard_Transient) ent = tr->EntityFromShapeResult(shp, -1);
+      const Handle(Standard_Transient) ent = eids.find(shp);
       if (ent.IsNull())
         continue;
       const int num = model->Number(ent);
@@ -263,6 +332,98 @@ static int face_eid(const Handle(XSControl_TransferReader) & tr,
     }
   }
   return 0;
+}
+
+// Wall-clock seconds since `t0` — the stage timings the import log prints
+// (axg.stp 2026-10-11: 80 s, and nothing said where).
+using Clock = std::chrono::steady_clock;
+static double secs_since(Clock::time_point t0)
+{
+  return std::chrono::duration<double>(Clock::now() - t0).count();
+}
+
+// LOST FACES BY NAME (2026-10-11, axg.stp: faces went missing). The import
+// note only COUNTED them, so a missing side plate surfaced as a cover refusing
+// an «open edge» two steps later. One line per face that will not reach the
+// mesh: its STEP #ident (findable in the file), its surface kind, its size and
+// centre in AUTHOR units, CAD frame. Text for the import log — not a sidecar
+// channel, so the python reference and the parity gate are untouched.
+static void report_lost_face(const TopoDS_Face &face, const char *why,
+                             const EidIndex &eids,
+                             const Handle(StepData_StepModel) & model)
+{
+  Bnd_Box box;
+  try
+  {
+    BRepBndLib::Add(face, box, Standard_False);   // geometry: no triangles here
+  }
+  catch (const Standard_Failure &)
+  {
+  }
+  if (box.IsVoid())
+  {
+    // the surface would not bound (axg #149897, a 4 µm sliver) — its corners do
+    for (TopExp_Explorer ev(face, TopAbs_VERTEX); ev.More(); ev.Next())
+      box.Add(BRep_Tool::Pnt(TopoDS::Vertex(ev.Current())));
+  }
+  char where[192] = "no extent";
+  if (!box.IsVoid())
+  {
+    double x0, y0, z0, x1, y1, z1;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    const double s = ORACLE_SCALE;
+    const double d = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)
+                               + (z1 - z0) * (z1 - z0));
+    std::snprintf(where, sizeof(where),
+                  "%.3g across, centre (%.4g, %.4g, %.4g)", d * s,
+                  0.5 * (x0 + x1) * s, 0.5 * (y0 + y1) * s, 0.5 * (z0 + z1) * s);
+  }
+  std::printf("hc-cadconv: LOST face #%d (%s, %s): %s\n",
+              face_eid(eids, model, face), face_kind(face), where, why);
+}
+
+// The faces the READER dropped have no shape to measure — named by their STEP
+// entity: the #ident and the surface entity OCC could not build. Walked only
+// when the count says some are missing.
+static void report_dropped_faces(const Handle(XSControl_TransferReader) & tr,
+                                 const Handle(StepData_StepModel) & model,
+                                 int expected)
+{
+  if (tr.IsNull() || model.IsNull())
+    return;
+  int found = 0;
+  for (int i = 1; i <= model->NbEntities(); ++i)
+  {
+    const Handle(Standard_Transient) ent = model->Value(i);
+    const Handle(StepShape_FaceSurface) fs =
+        Handle(StepShape_FaceSurface)::DownCast(ent);   // AdvancedFace too
+    if (fs.IsNull())
+      continue;
+    bool built = false;
+    try
+    {
+      built = !tr->ShapeResult(ent).IsNull();
+    }
+    catch (const Standard_Failure &)
+    {
+    }
+    if (built)
+      continue;
+    std::string surf = "?";
+    if (!fs->FaceGeometry().IsNull())
+    {
+      surf = fs->FaceGeometry()->DynamicType()->Name();
+      if (surf.rfind("StepGeom_", 0) == 0)
+        surf = surf.substr(9);
+    }
+    const int ident = model->IdentLabel(ent);
+    if (++found <= 20)
+      std::printf("hc-cadconv: LOST face #%d (%s): the reader could not build "
+                  "it\n", ident > 0 ? ident : i, surf.c_str());
+  }
+  if (found != expected)
+    std::printf("hc-cadconv: %d face entit(ies) without a shape, %d counted "
+                "lost\n", found, expected);
 }
 
 // How many faces the STEP FILE declares, or 0 when the model cannot be walked.
@@ -543,10 +704,18 @@ int convert(const std::string &step_path, const std::string &glb_path,
   Handle(TDocStd_Document) doc =
       new TDocStd_Document(TCollection_ExtendedString("BinXCAF"));
 
+  // stage timings, printed as ONE line at the end
+  const Clock::time_point t_start = Clock::now();
+  Clock::time_point t_mark = t_start;
+  double t_read = 0, t_transfer = 0, t_mesh = 0, t_refine = 0, t_records = 0,
+         t_edges = 0, t_sidecars = 0, t_glb = 0;
+
   STEPCAFControl_Reader reader;
   reader.SetNameMode(Standard_True);   // part names -> XCAF labels (8c uses them)
   if (reader.ReadFile(step_path.c_str()) != IFSelect_RetDone)
     throw std::runtime_error("STEP read failed: " + step_path);
+  t_read = secs_since(t_mark);
+  t_mark = Clock::now();
   if (!reader.Transfer(doc))
     throw std::runtime_error("STEP transfer failed: " + step_path);
   // The glb writer takes its input unit from the DOCUMENT's length unit (the
@@ -592,6 +761,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
                          const std::string &name, EdgeTally &ed, bool closed) {
     const int e0 = static_cast<int>(orc_edges.size());
     const int v0 = static_cast<int>(orc_verts.size());
+    const Clock::time_point t_blk = Clock::now();
     if (!faces.empty())
     {
       // The block is the unit of INDEXING (the import slices every channel by
@@ -610,6 +780,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
       for (size_t j = 0; j < faces.size(); ++j)
         orc_faces[f0 + j].w = face_wires(faces[j], eo.recmap, e0);
     }
+    t_edges += secs_since(t_blk);
     // only a body meant to CLOSE can be torn — a sheet body's rim is not
     const int torn = closed ? tally_tears(ed) : 0;
     if (torn)
@@ -639,10 +810,13 @@ int convert(const std::string &step_path, const std::string &glb_path,
     tr.Nullify();                   // no map: bodies fall back to index names
     step_model.Nullify();
   }
+  const EidIndex eids(tr);          // face -> STEP entity, once (not per face)
 
+  t_transfer = secs_since(t_mark);
   const int NO_OWNER = INT_MIN;     // the python's `cur is None`
   for (const PartIn &part : parts_in)
   {
+    t_mark = Clock::now();
     // explosion guard: floor the deflection at 2e-4 x the PART's extent — an
     // out-of-scale model must slow down to «coarser», never blow up to 42 GB
     const double eff_lin =
@@ -653,6 +827,8 @@ int convert(const std::string &step_path, const std::string &glb_path,
                   part.name.empty() ? "?" : part.name.c_str(), lin_mm, eff_lin);
     BRepMesh_IncrementalMesh(part.shape, eff_lin, Standard_False, ang,
                              Standard_True);
+    t_mesh += secs_since(t_mark);
+    t_mark = Clock::now();
     // [] = one body (or none) — the whole part is the block
     const std::vector<SolidOwner> owners =
         solid_owners(part.shape, tr, part.name);
@@ -684,6 +860,8 @@ int convert(const std::string &step_path, const std::string &glb_path,
                       defl_floor_mm(part.shape));
       }
     }
+    t_refine += secs_since(t_mark);
+    t_mark = Clock::now();
 
     int cur = NO_OWNER, f0 = static_cast<int>(orc_faces.size());
     std::vector<TopoDS_Face> blk;
@@ -713,6 +891,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
         // channels whole — skip it in both. The contract is one record per
         // EMITTED primitive.
         ++n_skipped;
+        report_lost_face(face, "the mesher made no triangles", eids, step_model);
         continue;
       }
       blk.push_back(face);
@@ -720,7 +899,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
       uv_faces.push_back(face_uv_record(face, tri));
       orc_faces.push_back(face_oracle(face, sigs, sig_order,
                                       static_cast<int>(orc_faces.size())));
-      orc_faces.back().eid = face_eid(tr, step_model, face);
+      orc_faces.back().eid = face_eid(eids, step_model, face);
       const std::vector<SeamRecord> seams =
           face_seams(face, static_cast<int>(orc_faces.size()) - 1);
       orc_seams.insert(orc_seams.end(), seams.begin(), seams.end());
@@ -728,7 +907,9 @@ int convert(const std::string &step_path, const std::string &glb_path,
     const int last = cur == NO_OWNER ? 0 : cur;
     close_block(blk, f0, block_name(part.name, last, owners), ed,
                 block_closed(owners, last, part.shape));
+    t_records += secs_since(t_mark);
   }
+  t_mark = Clock::now();
   if (n_skipped)
     std::printf("hc-cadconv: %d face(s) had no tessellation — skipped in "
                 "sidecars\n", n_skipped);
@@ -736,9 +917,14 @@ int convert(const std::string &step_path, const std::string &glb_path,
                                        ? n_step_faces - n_shape_faces : 0)
                                 : 0;
   if (lost)
+  {
     std::printf("hc-cadconv: %d of %d CAD face(s) were DROPPED BY THE READER "
                 "(unbuildable surface) — bodies may be incomplete\n",
                 lost, n_step_faces);
+    report_dropped_faces(tr, step_model, lost);
+  }
+  t_records += secs_since(t_mark);
+  t_mark = Clock::now();
 
   // Part sidecar: the free-shape boundaries of the SAME face traversal that
   // orders the glb primitives — contiguous blocks in primitive order. The
@@ -771,6 +957,8 @@ int convert(const std::string &step_path, const std::string &glb_path,
   write_uv_sidecar(glb_path, uv_faces);
   write_oracle_sidecar(glb_path, orc_faces, orc_edges, orc_verts, orc_seams,
                        sigs, sig_order);
+  t_sidecars = secs_since(t_mark);
+  t_mark = Clock::now();
 
   RWGltf_CafWriter writer(TCollection_AsciiString(glb_path.c_str()),
                           Standard_True);       // True = binary .glb
@@ -786,5 +974,10 @@ int convert(const std::string &step_path, const std::string &glb_path,
   TColStd_IndexedDataMapOfStringString file_info;
   if (!writer.Perform(doc, file_info, Message_ProgressRange()))
     throw std::runtime_error("glb write failed: " + glb_path);
+  t_glb = secs_since(t_mark);
+  std::printf("hc-cadconv: timing — read %.1f s, transfer %.1f s, mesh %.1f s, "
+              "refine %.1f s, records %.1f s (edges %.1f s), sidecars %.1f s, "
+              "glb %.1f s; total %.1f s\n", t_read, t_transfer, t_mesh, t_refine,
+              t_records, t_edges, t_sidecars, t_glb, secs_since(t_start));
   return labels.Length();
 }
