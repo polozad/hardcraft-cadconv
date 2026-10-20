@@ -23,9 +23,11 @@ message(STATUS "OpenCASCADE ${OpenCASCADE_VERSION} at ${OpenCASCADE_INSTALL_PREF
 add_executable(hc-cadconv
   src/main.cpp
   src/convert.cpp
+  src/heal.cpp
   src/oracle.cpp
   src/parts.cpp
   src/refine.cpp
+  src/repair.cpp
 )
 target_include_directories(hc-cadconv PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 

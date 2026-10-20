@@ -55,7 +55,7 @@
 ; (#ident, surface kind, size, centre — the import note shows it); one stage-
 ; timing line. Text only: no PROTOCOL change, no new channel. 1.2.4 was built
 ; in CI but never released — superseded, not re-cut under its name.
-#define AppVersion   "1.2.5"
+#define AppVersion   "1.2.6"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"

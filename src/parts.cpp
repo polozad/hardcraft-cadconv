@@ -1,4 +1,5 @@
 #include "parts.h"
+#include "heal.h"
 
 #include <cmath>
 
@@ -127,12 +128,20 @@ void xcaf_parts(const Handle(XCAFDoc_ShapeTool) & shape_tool,
 // NB the C++ map hands back a bare Handle(Standard_Transient): the DownCast is
 // ours to do (the python bindings auto-resolve it). Skip it and every body
 // silently loses its name — and with it the per-body split's naming.
-static std::string solid_name(const Handle(XSControl_TransferReader) & tr,
-                              const TopoDS_Shape &solid)
+std::string solid_name(const Handle(XSControl_TransferReader) & tr,
+                       const TopoDS_Shape &solid)
 {
+  // A body the writer-split heal rebuilt is a new shape — its name rides
+  // HEAL_ALIAS.
+  const TopoDS_Shape variants[2] = {solid, solid.Located(TopLoc_Location())};
+  for (const TopoDS_Shape &shp : variants)
+  {
+    const int i = HEAL_ALIAS.solids.FindIndex(shp);
+    if (i)
+      return HEAL_ALIAS.solid_names[i - 1];
+  }
   if (tr.IsNull())
     return std::string();
-  const TopoDS_Shape variants[2] = {solid, solid.Located(TopLoc_Location())};
   for (const TopoDS_Shape &shp : variants)
   {
     try

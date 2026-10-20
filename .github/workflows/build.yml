@@ -43,7 +43,15 @@ permissions:
 jobs:
   check:
     name: compile check (linux)
-    runs-on: ubuntu-latest
+    # A manual run is a package run, and `package (linux-64)` builds and smokes
+    # the same tree: running both builds a cold OCCT twice and the second cache
+    # save collides with the first («Cache save failed», run 38150122722).
+    if: github.event_name != 'workflow_dispatch'
+    # Pinned, not ubuntu-latest: the label moves to Ubuntu 26 from 2026-10-19,
+    # and the image decides the glibc the shipped linux binary needs and the
+    # compiler the cached OCCT prefix was built with. Move it on purpose, with
+    # the cache key, never by a label migration.
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v5
@@ -54,7 +62,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build patchelf
       - name: restore OCCT
         id: occt_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             _occt/linux-64
@@ -82,7 +90,7 @@ jobs:
           PY
       - name: save OCCT
         if: steps.occt_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             _occt/linux-64
@@ -118,7 +126,8 @@ jobs:
             triple: macos-arm64
             prefix: osx-arm64
             exe: dist/hc-cadconv/hc-cadconv
-          - os: ubuntu-latest
+          # pinned with the check job above (glibc of the shipped binary)
+          - os: ubuntu-24.04
             triple: linux-64
             prefix: linux-64
             exe: dist/hc-cadconv/hc-cadconv
@@ -135,7 +144,7 @@ jobs:
         run: brew install ninja
       - name: restore OCCT
         id: occt_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             _occt/${{ matrix.prefix }}
@@ -163,7 +172,7 @@ jobs:
           PY
       - name: save OCCT
         if: steps.occt_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             _occt/${{ matrix.prefix }}
@@ -255,7 +264,7 @@ jobs:
           print(json.dumps(man, indent=2, sort_keys=True))
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: hc-cadconv-${{ matrix.triple }}

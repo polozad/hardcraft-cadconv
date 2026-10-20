@@ -5,10 +5,12 @@
 // plus the three importer pins, the uv/oracle sidecars, the per-body split
 // (parts.json), and the torn re-mesh.
 #include "convert.h"
+#include "heal.h"
 #include "json.h"
 #include "oracle.h"
 #include "parts.h"
 #include "refine.h"
+#include "repair.h"
 
 #include <cctype>
 #include <chrono>
@@ -310,9 +312,17 @@ static int face_eid(const EidIndex &eids,
                     const Handle(StepData_StepModel) & model,
                     const TopoDS_Face &face)
 {
+  // A face the writer-split heal rebuilt is a NEW shape the transfer map has
+  // never seen — HEAL_ALIAS carries its eid (the earlier piece's).
+  const TopoDS_Shape variants[2] = {face, face.Located(TopLoc_Location())};
+  for (const TopoDS_Shape &shp : variants)
+  {
+    const int i = HEAL_ALIAS.faces.FindIndex(shp);
+    if (i)
+      return HEAL_ALIAS.face_eids[i - 1];
+  }
   if (model.IsNull())
     return 0;
-  const TopoDS_Shape variants[2] = {face, face.Located(TopLoc_Location())};
   for (const TopoDS_Shape &shp : variants)
   {
     try
@@ -494,7 +504,8 @@ static void write_oracle_sidecar(const std::string &glb_path,
                                  const std::vector<VertRecord> &verts,
                                  const std::vector<SeamRecord> &seams,
                                  const CloneSigs &sigs,
-                                 const std::vector<std::string> &sig_order)
+                                 const std::vector<std::string> &sig_order,
+                                 const HealResult &heal)
 {
   // Emptiness rule: an exporter with no analytic
   // curve left (MOI is all-NURBS) yields NO edge oracle — those edges would only
@@ -661,6 +672,36 @@ static void write_oracle_sidecar(const std::string &glb_path,
     }
     j.end_arr();
   }
+  if (!heal.healed.empty())          // writer splits folded back: absent = none
+  {
+    j.key("healed");
+    j.begin_arr();
+    for (const HealRecord &r : heal.healed)
+    {
+      j.begin_obj();
+      j.kv("e", r.kept);
+      j.key("gone");
+      j.begin_arr();
+      for (int g : r.gone)
+        j.num(g);
+      j.end_arr();
+      j.end_obj();
+    }
+    j.end_arr();
+  }
+  if (!heal.kept.empty())            // writer splits left as the file has them
+  {
+    j.key("heal_kept");
+    j.begin_arr();
+    for (const std::vector<int> &c : heal.kept)
+    {
+      j.begin_arr();
+      for (int e : c)
+        j.num(e);
+      j.end_arr();
+    }
+    j.end_arr();
+  }
   if (!seams.empty())                // absent key = the older behaviour
   {
     j.key("seams");
@@ -692,6 +733,7 @@ int convert(const std::string &step_path, const std::string &glb_path,
   // unit-abstract (PROTOCOL 2): everything OCC hands us is mm-normalised by
   // the DECLARED header unit; unwind it on output so the glb + sidecars carry
   // the author's own magnitudes. `lin_defl` arrives in author units → OCC mm.
+  HEAL_ALIAS.clear();                 // one conversion's aliases only
   const double unit_mm = step_unit_mm(step_path);
   ORACLE_SCALE = 1.0 / unit_mm;
   const double lin_mm = opts.lin_defl * unit_mm;
@@ -731,6 +773,44 @@ int convert(const std::string &step_path, const std::string &glb_path,
   if (labels.Length() == 0)
     throw std::runtime_error("no shapes in STEP");
 
+  Handle(XSControl_TransferReader) tr;   // shape -> STEP entity map
+  Handle(StepData_StepModel) step_model; // entity -> file #ident
+  try
+  {
+    tr = reader.ChangeReader().WS()->TransferReader();
+    step_model = Handle(StepData_StepModel)::DownCast(
+        reader.ChangeReader().WS()->Model());
+  }
+  catch (const Standard_Failure &)
+  {
+    tr.Nullify();                   // no map: bodies fall back to index names
+    step_model.Nullify();
+  }
+  const EidIndex eids(tr);          // face -> STEP entity, once (not per face)
+
+  // STEP WRITER SPLITS (see heal.h): restore the faces the
+  // HOOPS writer cut on their period origin — BEFORE the parts are taken, so
+  // the mesher, every sidecar and the glb writer read the healed B-rep
+  HealResult heal;
+  if (opts.heal_splits)
+  {
+    const HealPairs pairs = writer_split_pairs(step_path);
+    if (!pairs.empty())
+    {
+      heal = heal_writer_splits(
+          shape_tool, pairs,
+          [&](const TopoDS_Face &f) { return face_eid(eids, step_model, f); },
+          [&](const TopoDS_Shape &s) { return solid_name(tr, s); });
+      std::printf("hc-cadconv: healed %d STEP writer split(s) (%d face(s) "
+                  "folded back)", static_cast<int>(heal.healed.size()),
+                  heal.removed);
+      if (!heal.kept.empty())
+        std::printf("; %d kept as the file has them (no valid single face)",
+                    static_cast<int>(heal.kept.size()));
+      std::printf("\n");
+    }
+  }
+
   // Faces the READER dropped, before any tessellation — the only cheap witness.
   const int n_step_faces = count_step_faces(reader);
 
@@ -755,6 +835,8 @@ int convert(const std::string &step_path, const std::string &glb_path,
   std::vector<std::string> sig_order;
   std::vector<PartOut> parts;       // per BODY block, in primitive order
   int n_skipped = 0, n_shape_faces = 0;
+  int n_repaired = 0;                 // faces re-meshed over their holes
+  TopTools_IndexedMapOfShape repair_done;
 
   // Seal one block: its edge oracle + the sidecar record.
   auto close_block = [&](const std::vector<TopoDS_Face> &faces, int f0,
@@ -797,20 +879,6 @@ int convert(const std::string &step_path, const std::string &glb_path,
     ed.clear();
   };
 
-  Handle(XSControl_TransferReader) tr;   // shape -> STEP entity map
-  Handle(StepData_StepModel) step_model; // entity -> file #ident
-  try
-  {
-    tr = reader.ChangeReader().WS()->TransferReader();
-    step_model = Handle(StepData_StepModel)::DownCast(
-        reader.ChangeReader().WS()->Model());
-  }
-  catch (const Standard_Failure &)
-  {
-    tr.Nullify();                   // no map: bodies fall back to index names
-    step_model.Nullify();
-  }
-  const EidIndex eids(tr);          // face -> STEP entity, once (not per face)
 
   t_transfer = secs_since(t_mark);
   const int NO_OWNER = INT_MIN;     // the python's `cur is None`
@@ -860,6 +928,13 @@ int convert(const std::string &step_path, const std::string &glb_path,
                       defl_floor_mm(part.shape));
       }
     }
+    // MESH REPAIR: after the last re-mesh, before any record reads the
+    // triangulation — a face the mesher left with holes is closed from its own
+    // boundary; every closed face is left exactly as it is
+    n_repaired += repair_holed_faces(
+        part.shape,
+        [&](const TopoDS_Face &f) { return face_eid(eids, step_model, f); },
+        repair_done);
     t_refine += secs_since(t_mark);
     t_mark = Clock::now();
 
@@ -913,8 +988,10 @@ int convert(const std::string &step_path, const std::string &glb_path,
   if (n_skipped)
     std::printf("hc-cadconv: %d face(s) had no tessellation — skipped in "
                 "sidecars\n", n_skipped);
-  const int lost = n_step_faces ? (n_step_faces - n_shape_faces > 0
-                                       ? n_step_faces - n_shape_faces : 0)
+  // a face the heal folded into its neighbour was not LOST by the reader
+  const int kept_faces = n_step_faces - heal.removed;
+  const int lost = n_step_faces ? (kept_faces - n_shape_faces > 0
+                                       ? kept_faces - n_shape_faces : 0)
                                 : 0;
   if (lost)
   {
@@ -950,13 +1027,15 @@ int convert(const std::string &step_path, const std::string &glb_path,
     j.end_arr();
     j.kv("lost", lost);
     j.kv("untessellated", n_skipped);
+    if (n_repaired)                   // absent = none (older output)
+      j.kv("repaired", n_repaired);
     j.end_obj();
     j.write(glb_path + ".parts.json");  // absent = one merged object (old path)
   }
 
   write_uv_sidecar(glb_path, uv_faces);
   write_oracle_sidecar(glb_path, orc_faces, orc_edges, orc_verts, orc_seams,
-                       sigs, sig_order);
+                       sigs, sig_order, heal);
   t_sidecars = secs_since(t_mark);
   t_mark = Clock::now();
 

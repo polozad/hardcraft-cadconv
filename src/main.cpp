@@ -2,7 +2,7 @@
 // python reference implementation.
 //
 // THE CONTRACT (the consumer holds the other end of it):
-//     hc-cadconv <step> <glb> <lin_defl> <ang_defl_deg> <refine_torn>
+//     hc-cadconv <step> <glb> <lin_defl> <ang_defl_deg> <refine_torn> [heal_splits]
 //         (lin_defl in the STEP file's AUTHOR units — unit-abstract, PROTOCOL 2)
 //         convert; exit 0 = the glb + its sidecars were written
 //     hc-cadconv --protocol
@@ -38,7 +38,7 @@ static const int PROTOCOL = 2;
 // The channels this build emits. Present = authoritative; a consumer that sees
 // NO caps key must treat it as UNKNOWN (an older converter) and go on probing
 // the data, never as "this converter emits nothing".
-static const char *CAPS = "\"placement\",\"eids\",\"seams\",\"uv\",\"parts\",\"topology\"";
+static const char *CAPS = "\"placement\",\"eids\",\"seams\",\"uv\",\"parts\",\"topology\",\"heal\",\"repair\"";
 
 static int handshake()
 {
@@ -52,7 +52,7 @@ static int handshake()
 }
 
 static const char *USAGE =
-    "hc-cadconv <step> <glb> [lin_defl] [ang_defl_deg] [refine_torn]\n"
+    "hc-cadconv <step> <glb> [lin_defl] [ang_defl_deg] [refine_torn] [heal_splits]\n"
     "hc-cadconv --protocol\n";
 
 // argv doubles, parsed under the C locale (see main): a comma-decimal locale
@@ -98,6 +98,8 @@ int main(int argc, char **argv)
     opts.ang_defl_deg = arg_double(argv[4], opts.ang_defl_deg);
   if (argc > 5)
     opts.refine_torn = arg_bool(argv[5]);
+  if (argc > 6)                    // absent = OFF: a consumer that does not
+    opts.heal_splits = arg_bool(argv[6]);   // ask gets today's output
 
   try
   {

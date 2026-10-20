@@ -59,6 +59,10 @@ void xcaf_parts(const Handle(XCAFDoc_ShapeTool) & shape_tool,
                 const TDF_Label &label, const TopLoc_Location &loc,
                 const std::string &name_hint, std::vector<PartIn> &out);
 
+// The body's OWN name from the STEP file (its MANIFOLD_SOLID_BREP entity), or "".
+std::string solid_name(const Handle(XSControl_TransferReader) & tr,
+                       const TopoDS_Shape &solid);
+
 // [(face-map, name) per body] of `shape`, or empty when it holds <= 1 solid.
 std::vector<SolidOwner> solid_owners(const TopoDS_Shape &shape,
                                      const Handle(XSControl_TransferReader) & tr,
