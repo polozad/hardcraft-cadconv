@@ -55,7 +55,14 @@
 ; (#ident, surface kind, size, centre — the import note shows it); one stage-
 ; timing line. Text only: no PROTOCOL change, no new channel. 1.2.4 was built
 ; in CI but never released — superseded, not re-cut under its name.
-#define AppVersion   "1.2.6"
+; 1.2.6 (2026-10-20): the STEP writer's splits folded back (`heal`) and faces the
+; mesher left with holes re-meshed from their own boundary (`repair`). Built in
+; CI, never released — superseded, not re-cut under its name.
+; 1.2.7 (2026-11-13): `faces[].a`, the analytic surface OCCT recognises in a
+; B-spline / Bezier face (cap `analytic`; rail loft «B-spline walls» reads it).
+; Additive: no PROTOCOL change. Builds made between 2026-11-07 and this bump
+; emit `a` under the name 1.2.6 without the cap — the cap tells them apart.
+#define AppVersion   "1.2.7"
 #define Protocol     "2"
 #define AppPublisher "polozad"
 #define AppURL       "https://github.com/polozad/hardcraft-dist"

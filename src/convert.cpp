@@ -540,16 +540,27 @@ static void write_oracle_sidecar(const std::string &glb_path,
       j.kv("r", f.r);
     if (f.eid)
       j.kv("e", f.eid);
-    if (f.g.any())                       // optional placement block (FaceGeom)
-    {
+    auto put_geom = [&j](const FaceGeom &g) {
       j.key("g");
       j.begin_obj();
-      if (f.g.has_o) { j.key("o"); j.begin_arr(); for (double q : f.g.o) j.num(q); j.end_arr(); }
-      if (f.g.has_d) { j.key("d"); j.begin_arr(); for (double q : f.g.d) j.num(q); j.end_arr(); }
-      if (f.g.has_x) { j.key("x"); j.begin_arr(); for (double q : f.g.x) j.num(q); j.end_arr(); }
-      if (f.g.has_rmaj) j.kv("rmaj", f.g.rmaj);
-      if (f.g.has_rmin) j.kv("rmin", f.g.rmin);
-      if (f.g.has_semi) j.kv("semi", f.g.semi);
+      if (g.has_o) { j.key("o"); j.begin_arr(); for (double q : g.o) j.num(q); j.end_arr(); }
+      if (g.has_d) { j.key("d"); j.begin_arr(); for (double q : g.d) j.num(q); j.end_arr(); }
+      if (g.has_x) { j.key("x"); j.begin_arr(); for (double q : g.x) j.num(q); j.end_arr(); }
+      if (g.has_rmaj) j.kv("rmaj", g.rmaj);
+      if (g.has_rmin) j.kv("rmin", g.rmin);
+      if (g.has_semi) j.kv("semi", g.semi);
+      j.end_obj();
+    };
+    if (f.g.any())                       // optional placement block (FaceGeom)
+      put_geom(f.g);
+    if (f.a.present)                     // the recognised analytic (FaceAna)
+    {
+      j.key("a");
+      j.begin_obj();
+      j.kv("s", f.a.kind);
+      put_geom(f.a.g);
+      j.kv("gap", f.a.gap);
+      j.kv("rel", f.a.rel);
       j.end_obj();
     }
     if (f.has_orient) { j.key("o"); j.boolean(f.orient_rev); }

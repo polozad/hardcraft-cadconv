@@ -72,6 +72,21 @@ struct FaceWires
   std::vector<std::vector<int>> inner;
 };
 
+// `faces[].a` — the analytic surface OCCT recognises in a face the STEP writes
+// as B-spline/Bezier (GeomConvert_SurfToAnaSurf, MinGap, over the face's trimmed
+// (u,v) box, after the writer-split heal). Read-only: `s`/`g` stay as the file
+// has them. `rel` is the gap over the face's OWN box diagonal — the per-face
+// tolerance; a face whose best fit is looser than ANA_REL_MAX carries no `a`.
+// No cap announces it until a consumer reads it: absent = an older converter.
+struct FaceAna
+{
+  bool present = false;
+  std::string kind;                 // "plane" | "cylinder" | "cone" | "sphere" | "torus"
+  FaceGeom g;                       // its placement, the FaceGeom layout
+  double gap = 0.0;                 // max deviation from the face's surface, glb units
+  double rel = 0.0;                 // gap / the face's own box diagonal
+};
+
 struct FaceRecord
 {
   std::string kind;                 // "plane" | "cylinder" | ... | "?"
@@ -90,6 +105,7 @@ struct FaceRecord
   double b[4] = {0, 0, 0, 0};       // [u0,u1,v0,v1], RAW OCC parameters — the
                                     // SAME space UvRecord reads for pu/pv
   FaceWires w;
+  FaceAna a;                        // the recognised analytic surface (FaceAna)
 };
 
 // `edges[].p` — one edge's (u,v) trace on each adjacent face, in that face's RAW

@@ -8,9 +8,13 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Curve2d.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
+#include <GeomAdaptor_Surface.hxx>
+#include <GeomConvert_SurfToAnaSurf.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Standard_Failure.hxx>
@@ -244,7 +248,7 @@ UvRecord face_uv_record(const TopoDS_Face &face,
 }
 
 // PROTOCOL 3 placement — the numeric twin of `surf_sig`'s defining data.
-static void fill_geom(BRepAdaptor_Surface &ad, GeomAbs_SurfaceType t,
+static void fill_geom(const Adaptor3d_Surface &ad, GeomAbs_SurfaceType t,
                       FaceGeom &g)
 {
   auto put = [](double *dst, const gp_Pnt &p, double k) {
@@ -297,6 +301,43 @@ static void fill_geom(BRepAdaptor_Surface &ad, GeomAbs_SurfaceType t,
     put(g.o, ax.Location(), ORACLE_SCALE);    g.has_o = true;
     putd(g.d, ax.Direction());                g.has_d = true;
   }
+}
+
+// The loosest fit `a` keeps, over the face's own box diagonal; the census
+// buckets what lies under it (1e-6 / 1e-5 / 1e-4 / 1e-3).
+static const double ANA_REL_MAX = 1e-3;
+
+// `faces[].a` (see FaceAna): only on a B-spline/Bezier face with a trim box
+static void face_ana(const TopoDS_Face &face, GeomAbs_SurfaceType t,
+                     const FaceRecord &rec, FaceAna &a)
+{
+  if ((t != GeomAbs_BSplineSurface && t != GeomAbs_BezierSurface)
+      || !rec.has_bounds)
+    return;
+  Bnd_Box box;
+  BRepBndLib::Add(face, box, Standard_False);
+  if (box.IsVoid())
+    return;
+  const double diag = std::sqrt(box.SquareExtent());
+  const Handle(Geom_Surface) s = BRep_Tool::Surface(face);
+  if (!(diag > 0.0) || s.IsNull())
+    return;
+  GeomConvert_SurfToAnaSurf cv(s);
+  cv.SetConvType(GeomConvert_MinGap);
+  const Handle(Geom_Surface) an = cv.ConvertToAnalytical(
+      ANA_REL_MAX * diag, rec.b[0], rec.b[1], rec.b[2], rec.b[3]);
+  if (an.IsNull())
+    return;
+  const GeomAdaptor_Surface ga(an);
+  const GeomAbs_SurfaceType at = ga.GetType();
+  if (at != GeomAbs_Plane && at != GeomAbs_Cylinder && at != GeomAbs_Cone
+      && at != GeomAbs_Sphere && at != GeomAbs_Torus)
+    return;
+  a.kind = surf_kind(at);
+  fill_geom(ga, at, a.g);
+  a.gap = cv.Gap() * ORACLE_SCALE;
+  a.rel = cv.Gap() / diag;
+  a.present = true;
 }
 
 FaceRecord face_oracle(const TopoDS_Face &face, CloneSigs &sigs,
@@ -356,6 +397,14 @@ FaceRecord face_oracle(const TopoDS_Face &face, CloneSigs &sigs,
   catch (const Standard_Failure &)
   {
     rec.has_bounds = false;
+  }
+  try
+  {
+    face_ana(face, t, rec, rec.a);
+  }
+  catch (const Standard_Failure &)
+  {
+    rec.a = FaceAna();             // no fit is no fact, never a lost run
   }
   std::string sig;
   try
